@@ -1,4 +1,5 @@
 FROM golang:1.23-bookworm AS build
+RUN apk --no-cache add ca-certificates
 WORKDIR /app
 COPY go.mod go.sum* ./
 RUN go mod download
