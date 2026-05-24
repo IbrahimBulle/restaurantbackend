@@ -10,6 +10,17 @@ import (
 	"database/sql"
 )
 
+const activeSessionCount = `-- name: ActiveSessionCount :one
+SELECT COUNT(*) FROM sessions WHERE status = 'active'
+`
+
+func (q *Queries) ActiveSessionCount(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, activeSessionCount)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const bestSellingItems = `-- name: BestSellingItems :many
 SELECT mi.name, SUM(oi.quantity) AS quantity, SUM(oi.quantity * oi.unit_price_cents) AS revenue_cents
 FROM order_items oi
@@ -51,7 +62,7 @@ func (q *Queries) BestSellingItems(ctx context.Context, limit int64) ([]BestSell
 const dailySales = `-- name: DailySales :many
 SELECT date(created_at) AS day, COUNT(*) AS order_count, SUM(total_cents) AS revenue_cents
 FROM orders
-WHERE status IN ('paid','served','ready')
+WHERE status IN ('paid','served','ready') OR payment_status = 'paid'
 GROUP BY date(created_at)
 ORDER BY day DESC
 LIMIT ?
@@ -117,4 +128,73 @@ func (q *Queries) LowStockIngredients(ctx context.Context) ([]Ingredient, error)
 		return nil, err
 	}
 	return items, nil
+}
+
+const openOrderCount = `-- name: OpenOrderCount :one
+SELECT COUNT(*) FROM orders WHERE status NOT IN ('paid', 'cancelled')
+`
+
+func (q *Queries) OpenOrderCount(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, openOrderCount)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const paymentMethodStats = `-- name: PaymentMethodStats :many
+SELECT method, COUNT(*) AS count, COALESCE(SUM(amount_cents), 0) AS revenue_cents
+FROM payments
+WHERE status = 'paid'
+GROUP BY method
+ORDER BY count DESC, method ASC
+`
+
+type PaymentMethodStatsRow struct {
+	Method       string      `json:"method"`
+	Count        int64       `json:"count"`
+	RevenueCents interface{} `json:"revenue_cents"`
+}
+
+func (q *Queries) PaymentMethodStats(ctx context.Context) ([]PaymentMethodStatsRow, error) {
+	rows, err := q.db.QueryContext(ctx, paymentMethodStats)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PaymentMethodStatsRow
+	for rows.Next() {
+		var i PaymentMethodStatsRow
+		if err := rows.Scan(&i.Method, &i.Count, &i.RevenueCents); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const revenueSnapshot = `-- name: RevenueSnapshot :one
+SELECT
+  COALESCE(SUM(CASE WHEN date(created_at) = date('now', 'localtime') AND status = 'paid' THEN amount_cents END), 0) AS daily_total_cents,
+  COALESCE(SUM(CASE WHEN date(created_at) >= date('now', '-6 day', 'localtime') AND status = 'paid' THEN amount_cents END), 0) AS weekly_total_cents,
+  COALESCE(SUM(CASE WHEN strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now', 'localtime') AND status = 'paid' THEN amount_cents END), 0) AS monthly_total_cents
+FROM payments
+`
+
+type RevenueSnapshotRow struct {
+	DailyTotalCents   interface{} `json:"daily_total_cents"`
+	WeeklyTotalCents  interface{} `json:"weekly_total_cents"`
+	MonthlyTotalCents interface{} `json:"monthly_total_cents"`
+}
+
+func (q *Queries) RevenueSnapshot(ctx context.Context) (RevenueSnapshotRow, error) {
+	row := q.db.QueryRowContext(ctx, revenueSnapshot)
+	var i RevenueSnapshotRow
+	err := row.Scan(&i.DailyTotalCents, &i.WeeklyTotalCents, &i.MonthlyTotalCents)
+	return i, err
 }

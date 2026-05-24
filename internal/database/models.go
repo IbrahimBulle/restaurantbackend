@@ -52,6 +52,8 @@ type Order struct {
 	Source        string        `json:"source"`
 	CreatedAt     time.Time     `json:"created_at"`
 	UpdatedAt     time.Time     `json:"updated_at"`
+	SessionID     sql.NullInt64 `json:"session_id"`
+	PaymentStatus string        `json:"payment_status"`
 }
 
 type OrderItem struct {
@@ -65,22 +67,57 @@ type OrderItem struct {
 }
 
 type Payment struct {
-	ID          int64     `json:"id"`
-	OrderID     int64     `json:"order_id"`
-	Method      string    `json:"method"`
-	AmountCents int64     `json:"amount_cents"`
-	Status      string    `json:"status"`
-	Reference   string    `json:"reference"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID           int64        `json:"id"`
+	OrderID      int64        `json:"order_id"`
+	Method       string       `json:"method"`
+	AmountCents  int64        `json:"amount_cents"`
+	Status       string       `json:"status"`
+	Reference    string       `json:"reference"`
+	CreatedAt    time.Time    `json:"created_at"`
+	PhoneNumber  string       `json:"phone_number"`
+	Provider     string       `json:"provider"`
+	MetadataJson string       `json:"metadata_json"`
+	ConfirmedAt  sql.NullTime `json:"confirmed_at"`
+}
+
+type QrCode struct {
+	ID        int64     `json:"id"`
+	TableID   int64     `json:"table_id"`
+	PublicUrl string    `json:"public_url"`
+	ImageData string    `json:"image_data"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type Receipt struct {
+	ID            int64         `json:"id"`
+	OrderID       int64         `json:"order_id"`
+	PaymentID     sql.NullInt64 `json:"payment_id"`
+	ReceiptNumber string        `json:"receipt_number"`
+	PayloadJson   string        `json:"payload_json"`
+	CreatedAt     time.Time     `json:"created_at"`
 }
 
 type RestaurantTable struct {
-	ID        int64     `json:"id"`
-	Number    string    `json:"number"`
-	Seats     int64     `json:"seats"`
-	Status    string    `json:"status"`
-	QrToken   string    `json:"qr_token"`
-	CreatedAt time.Time `json:"created_at"`
+	ID        int64          `json:"id"`
+	Number    string         `json:"number"`
+	Seats     int64          `json:"seats"`
+	Status    string         `json:"status"`
+	QrToken   string         `json:"qr_token"`
+	CreatedAt time.Time      `json:"created_at"`
+	Slug      sql.NullString `json:"slug"`
+	Active    int64          `json:"active"`
+}
+
+type Session struct {
+	ID           int64        `json:"id"`
+	TableID      int64        `json:"table_id"`
+	Token        string       `json:"token"`
+	CustomerName string       `json:"customer_name"`
+	Status       string       `json:"status"`
+	StartedAt    time.Time    `json:"started_at"`
+	LastSeenAt   time.Time    `json:"last_seen_at"`
+	EndedAt      sql.NullTime `json:"ended_at"`
 }
 
 type User struct {

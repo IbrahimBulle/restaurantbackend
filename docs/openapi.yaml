@@ -1,44 +1,90 @@
 openapi: 3.0.3
 info:
   title: QRDine API
-  version: 0.1.0
+  version: 1.0.0
 servers:
   - url: http://localhost:8080
 paths:
   /health:
     get:
+      summary: Health check
       responses:
         "200": { description: OK }
+  /ws:
+    get:
+      summary: Realtime websocket endpoint
+      responses:
+        "101": { description: Websocket upgrade }
   /api/auth/login:
     post:
-      summary: Login with staff credentials and receive a JWT
+      summary: Login with staff credentials and receive access and refresh tokens
       responses:
         "200": { description: Authenticated }
+  /api/auth/refresh:
+    post:
+      summary: Refresh an expired access token
+      responses:
+        "200": { description: Refreshed }
   /api/public/menu:
     get:
       summary: Public customer menu
       responses:
         "200": { description: Menu categories and items }
-  /api/public/tables/{token}:
+  /api/public/tables/{identifier}:
     get:
-      summary: Resolve a QR table token
+      summary: Resolve a QR table slug or token and start or resume a customer session
+      parameters:
+        - in: path
+          name: identifier
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Table context }
+  /api/public/sessions/{token}:
+    get:
+      summary: Resume an existing customer table session
       parameters:
         - in: path
           name: token
           required: true
           schema: { type: string }
       responses:
-        "200": { description: Table }
+        "200": { description: Session context }
   /api/public/orders:
     post:
-      summary: Place a QR or manual order
+      summary: Place a customer order
       responses:
         "201": { description: Order created }
+  /api/public/orders/{id}:
+    get:
+      summary: View a public order when a valid session token is provided
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        "200": { description: Order }
+  /api/public/orders/{id}/payments/cash:
+    post:
+      summary: Request a cash payment settlement for an order
+      responses:
+        "201": { description: Payment requested }
+  /api/public/orders/{id}/payments/mpesa:
+    post:
+      summary: Start an M-Pesa payment flow for an order
+      responses:
+        "201": { description: Payment initiated }
+  /api/me:
+    get:
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Current user }
   /api/orders:
     get:
       security: [{ bearerAuth: [] }]
       responses:
-        "200": { description: Orders }
+        "200": { description: Staff order feed }
   /api/orders/{id}/status:
     patch:
       security: [{ bearerAuth: [] }]
@@ -48,16 +94,58 @@ paths:
     get:
       security: [{ bearerAuth: [] }]
       responses:
-        "200": { description: Tables with QR URLs }
+        "200": { description: Active tables with QR URLs }
     post:
       security: [{ bearerAuth: [] }]
       responses:
         "201": { description: Table created }
+  /api/tables/{id}/qrcode:
+    get:
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: QR metadata for a table }
+    put:
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: QR image stored }
+  /api/menu:
+    get:
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Admin menu payload }
+    post:
+      security: [{ bearerAuth: [] }]
+      responses:
+        "201": { description: Menu item created }
   /api/reports/summary:
     get:
       security: [{ bearerAuth: [] }]
       responses:
-        "200": { description: Sales, best sellers, and low stock }
+        "200": { description: Daily, weekly, monthly sales and payment breakdowns }
+  /api/payments/cash:
+    post:
+      security: [{ bearerAuth: [] }]
+      responses:
+        "201": { description: Cash payment created }
+  /api/payments/mpesa:
+    post:
+      security: [{ bearerAuth: [] }]
+      responses:
+        "201": { description: M-Pesa payment created }
+  /api/payments/{id}/confirm:
+    post:
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Payment confirmed }
+  /api/users:
+    get:
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Staff accounts }
+    post:
+      security: [{ bearerAuth: [] }]
+      responses:
+        "201": { description: Staff account created }
 components:
   securitySchemes:
     bearerAuth:

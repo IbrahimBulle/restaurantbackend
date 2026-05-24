@@ -6,31 +6,44 @@ package database
 
 import (
 	"context"
+	"database/sql"
 )
 
 type Querier interface {
+	ActiveSessionCount(ctx context.Context) (int64, error)
 	BestSellingItems(ctx context.Context, limit int64) ([]BestSellingItemsRow, error)
-	CreateOrder(ctx context.Context, arg CreateOrderParams) (Order, error)
+	ConfirmPayment(ctx context.Context, arg ConfirmPaymentParams) (ConfirmPaymentRow, error)
+	CreateOrder(ctx context.Context, arg CreateOrderParams) (CreateOrderRow, error)
 	CreateOrderItem(ctx context.Context, arg CreateOrderItemParams) (OrderItem, error)
-	CreatePayment(ctx context.Context, arg CreatePaymentParams) (Payment, error)
-	CreateTable(ctx context.Context, arg CreateTableParams) (RestaurantTable, error)
+	CreatePayment(ctx context.Context, arg CreatePaymentParams) (CreatePaymentRow, error)
+	CreateSession(ctx context.Context, arg CreateSessionParams) (CreateSessionRow, error)
+	CreateTable(ctx context.Context, arg CreateTableParams) (CreateTableRow, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (CreateUserRow, error)
 	DailySales(ctx context.Context, limit int64) ([]DailySalesRow, error)
 	DeductIngredientStock(ctx context.Context, arg DeductIngredientStockParams) error
+	GetLatestOrderForSession(ctx context.Context, sessionID sql.NullInt64) (GetLatestOrderForSessionRow, error)
 	GetMenuItem(ctx context.Context, id int64) (MenuItem, error)
-	GetTableByToken(ctx context.Context, qrToken string) (RestaurantTable, error)
+	GetOrder(ctx context.Context, id int64) (GetOrderRow, error)
+	GetSessionByToken(ctx context.Context, token string) (GetSessionByTokenRow, error)
+	GetTableByIdentifier(ctx context.Context, arg GetTableByIdentifierParams) (GetTableByIdentifierRow, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	ListCategories(ctx context.Context) ([]MenuCategory, error)
 	ListMenuItems(ctx context.Context) ([]MenuItem, error)
-	ListOrderItems(ctx context.Context, orderID int64) ([]OrderItem, error)
-	ListOrders(ctx context.Context, limit int64) ([]Order, error)
-	ListPayments(ctx context.Context, limit int64) ([]Payment, error)
-	ListTables(ctx context.Context) ([]RestaurantTable, error)
+	ListOrderItems(ctx context.Context, orderID int64) ([]ListOrderItemsRow, error)
+	ListOrders(ctx context.Context, limit int64) ([]ListOrdersRow, error)
+	ListPayments(ctx context.Context, limit int64) ([]ListPaymentsRow, error)
+	ListTables(ctx context.Context) ([]ListTablesRow, error)
 	ListUsers(ctx context.Context) ([]ListUsersRow, error)
 	LowStockIngredients(ctx context.Context) ([]Ingredient, error)
-	UpdateOrderStatus(ctx context.Context, arg UpdateOrderStatusParams) (Order, error)
-	UpdateTableStatus(ctx context.Context, arg UpdateTableStatusParams) (RestaurantTable, error)
+	OpenOrderCount(ctx context.Context) (int64, error)
+	PaymentMethodStats(ctx context.Context) ([]PaymentMethodStatsRow, error)
+	RevenueSnapshot(ctx context.Context) (RevenueSnapshotRow, error)
+	TouchSession(ctx context.Context, arg TouchSessionParams) (TouchSessionRow, error)
+	UpdateOrderPaymentStatus(ctx context.Context, arg UpdateOrderPaymentStatusParams) (UpdateOrderPaymentStatusRow, error)
+	UpdateOrderStatus(ctx context.Context, arg UpdateOrderStatusParams) (UpdateOrderStatusRow, error)
+	UpdateTableStatus(ctx context.Context, arg UpdateTableStatusParams) (UpdateTableStatusRow, error)
 	UpsertMenuItem(ctx context.Context, arg UpsertMenuItemParams) (MenuItem, error)
+	UpsertQRCode(ctx context.Context, arg UpsertQRCodeParams) error
 }
 
 var _ Querier = (*Queries)(nil)

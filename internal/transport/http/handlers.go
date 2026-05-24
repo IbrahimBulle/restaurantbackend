@@ -34,12 +34,11 @@ func (h *Handler) Routes(logMiddleware func(http.Handler) http.Handler) http.Han
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID, middleware.RealIP, middleware.Recoverer)
 	r.Use(logMiddleware)
-	r.Use(RateLimit(120, 1_000_000_000))
+	r.Use(RateLimit(180, 1_000_000_000))
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   h.config.AllowedOrigins(),
-		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
-		AllowCredentials: true,
+		AllowedOrigins: h.config.AllowedOrigins(),
+		AllowedMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowedHeaders: []string{"Accept", "Authorization", "Content-Type"},
 	}))
 
 	r.Get("/health", h.health)
@@ -47,28 +46,47 @@ func (h *Handler) Routes(logMiddleware func(http.Handler) http.Handler) http.Han
 
 	r.Route("/api", func(r chi.Router) {
 		r.Post("/auth/login", h.login)
+		r.Post("/auth/refresh", h.refresh)
+		r.Post("/auth/logout", h.logout)
+
 		r.Get("/public/menu", h.menu)
-		r.Get("/public/tables/{token}", h.resolveTable)
+		r.Get("/public/tables/{identifier}", h.resolveTable)
+		r.Get("/public/sessions/{token}", h.sessionContext)
 		r.Post("/public/orders", h.placeOrder)
+		r.Get("/public/orders/{id}", h.publicOrder)
+		r.Post("/public/orders/{id}/payments/cash", h.publicCashPayment)
+		r.Post("/public/orders/{id}/payments/mpesa", h.publicMpesaPayment)
 
 		r.Group(func(r chi.Router) {
 			r.Use(auth.Middleware(h.config.JWTSecret))
+
 			r.Get("/me", h.me)
-			r.Get("/orders", h.orders)
-			r.Patch("/orders/{id}/status", h.updateOrderStatus)
-			r.Post("/payments", h.pay)
-			r.Get("/tables", h.tables)
-			r.Post("/tables", h.createTable)
-			r.Get("/menu", h.adminMenu)
-			r.Post("/menu/categories", h.createCategory)
-			r.Post("/menu/items", h.createMenuItem)
-			r.Patch("/menu/items/{id}", h.updateMenuItem)
-			r.Get("/reports/summary", h.analytics)
-			r.Get("/reports/sales.csv", h.salesCSV)
-			r.Get("/users", h.users)
-			r.Post("/users", h.createUser)
+			r.With(auth.RequireRoles(domain.StaffRoles()...)).Get("/orders", h.orders)
+			r.With(auth.RequireRoles(domain.StaffRoles()...)).Get("/orders/{id}", h.order)
+			r.With(auth.RequireRoles(domain.StaffRoles()...)).Patch("/orders/{id}/status", h.updateOrderStatus)
+			r.With(auth.RequireRoles(domain.StaffRoles()...)).Get("/tables", h.tables)
+			r.With(auth.RequireRoles(domain.StaffRoles()...)).Get("/tables/{id}/qrcode", h.tableQRCode)
+			r.With(auth.RequireRoles(domain.RoleAdmin, domain.RoleManager)).Post("/tables", h.createTable)
+			r.With(auth.RequireRoles(domain.RoleAdmin, domain.RoleManager)).Put("/tables/{id}/qrcode", h.saveTableQRCode)
+
+			r.With(auth.RequireRoles(domain.StaffRoles()...)).Get("/menu", h.adminMenu)
+			r.With(auth.RequireRoles(domain.RoleAdmin, domain.RoleManager)).Post("/menu", h.createMenuItem)
+			r.With(auth.RequireRoles(domain.RoleAdmin, domain.RoleManager)).Post("/menu/categories", h.createCategory)
+			r.With(auth.RequireRoles(domain.RoleAdmin, domain.RoleManager)).Post("/menu/items", h.createMenuItem)
+			r.With(auth.RequireRoles(domain.RoleAdmin, domain.RoleManager)).Patch("/menu/items/{id}", h.updateMenuItem)
+
+			r.With(auth.RequireRoles(domain.RoleAdmin, domain.RoleManager, domain.RoleCashier)).Get("/reports/summary", h.analytics)
+			r.With(auth.RequireRoles(domain.RoleAdmin, domain.RoleManager, domain.RoleCashier)).Get("/reports/sales.csv", h.salesCSV)
+			r.With(auth.RequireRoles(domain.RoleAdmin, domain.RoleManager)).Get("/users", h.users)
+			r.With(auth.RequireRoles(domain.RoleAdmin, domain.RoleManager)).Post("/users", h.createUser)
+
+			r.With(auth.RequireRoles(domain.RoleAdmin, domain.RoleManager, domain.RoleCashier)).Post("/payments/cash", h.cashPayment)
+			r.With(auth.RequireRoles(domain.RoleAdmin, domain.RoleManager, domain.RoleCashier)).Post("/payments/mpesa", h.mpesaPayment)
+			r.With(auth.RequireRoles(domain.RoleAdmin, domain.RoleManager, domain.RoleCashier)).Post("/payments/{id}/confirm", h.confirmPayment)
+			r.With(auth.RequireRoles(domain.StaffRoles()...)).Get("/receipts/{orderID}", h.receipt)
 		})
 	})
+
 	return r
 }
 
@@ -84,12 +102,41 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &input) {
 		return
 	}
-	user, token, err := h.service.Login(r.Context(), input.Email, input.Password)
+	user, accessToken, refreshToken, err := h.service.Login(r.Context(), input.Email, input.Password)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"user": user, "token": token})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"user":          user,
+		"token":         accessToken,
+		"access_token":  accessToken,
+		"refresh_token": refreshToken,
+	})
+}
+
+func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	if !decode(w, r, &input) {
+		return
+	}
+	user, accessToken, refreshToken, err := h.service.Refresh(r.Context(), input.RefreshToken)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"user":          user,
+		"token":         accessToken,
+		"access_token":  accessToken,
+		"refresh_token": refreshToken,
+	})
+}
+
+func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
@@ -99,10 +146,10 @@ func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":  "authenticated",
-		"user_id": claims.UserID,
-		"email":   claims.Email,
-		"role":    claims.Role,
+		"id":     claims.UserID,
+		"email":  claims.Email,
+		"role":   claims.Role,
+		"status": "authenticated",
 	})
 }
 
@@ -125,12 +172,27 @@ func (h *Handler) adminMenu(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) resolveTable(w http.ResponseWriter, r *http.Request) {
-	table, err := h.service.ResolveTable(r.Context(), chi.URLParam(r, "token"))
+	context, err := h.service.ResolveTableContext(
+		r.Context(),
+		chi.URLParam(r, "identifier"),
+		r.URL.Query().Get("session_token"),
+		r.URL.Query().Get("customer_name"),
+		h.frontendBase(r),
+	)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, table)
+	writeJSON(w, http.StatusOK, context)
+}
+
+func (h *Handler) sessionContext(w http.ResponseWriter, r *http.Request) {
+	context, err := h.service.SessionContext(r.Context(), chi.URLParam(r, "token"), h.frontendBase(r))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, context)
 }
 
 func (h *Handler) placeOrder(w http.ResponseWriter, r *http.Request) {
@@ -146,8 +208,17 @@ func (h *Handler) placeOrder(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, order)
 }
 
+func (h *Handler) publicOrder(w http.ResponseWriter, r *http.Request) {
+	order, err := h.service.PublicOrder(r.Context(), pathID(r), queryStr(r, "session_token", ""))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, order)
+}
+
 func (h *Handler) orders(w http.ResponseWriter, r *http.Request) {
-	orders, err := h.service.Orders(r.Context(), queryInt(r, "limit", 50))
+	orders, err := h.service.Orders(r.Context(), queryInt(r, "limit", 100))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -155,11 +226,29 @@ func (h *Handler) orders(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, orders)
 }
 
+func (h *Handler) order(w http.ResponseWriter, r *http.Request) {
+	order, err := h.service.Order(r.Context(), pathID(r))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, order)
+}
+
 func (h *Handler) updateOrderStatus(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.FromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, fmt.Errorf("unauthorized"))
+		return
+	}
 	var input struct {
 		Status string `json:"status"`
 	}
 	if !decode(w, r, &input) {
+		return
+	}
+	if !canUpdateOrderStatus(claims.Role, strings.ToLower(strings.TrimSpace(input.Status))) {
+		writeError(w, http.StatusForbidden, fmt.Errorf("role %s cannot set status %s", claims.Role, input.Status))
 		return
 	}
 	order, err := h.service.UpdateOrderStatus(r.Context(), pathID(r), input.Status)
@@ -168,24 +257,6 @@ func (h *Handler) updateOrderStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, order)
-}
-
-func (h *Handler) pay(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		OrderID     int64  `json:"order_id"`
-		Method      string `json:"method"`
-		AmountCents int64  `json:"amount_cents"`
-		Reference   string `json:"reference"`
-	}
-	if !decode(w, r, &input) {
-		return
-	}
-	payment, err := h.service.Pay(r.Context(), input.OrderID, input.Method, input.AmountCents, input.Reference)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, payment)
 }
 
 func (h *Handler) tables(w http.ResponseWriter, r *http.Request) {
@@ -205,13 +276,44 @@ func (h *Handler) createTable(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &input) {
 		return
 	}
-	table, err := h.service.CreateTable(r.Context(), input.Number, input.Seats)
+	table, err := h.service.CreateTable(r.Context(), input.Number, input.Seats, h.frontendBase(r))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	table.QRURL = h.frontendBase(r) + "/order/" + table.QRToken
 	writeJSON(w, http.StatusCreated, table)
+}
+
+func (h *Handler) tableQRCode(w http.ResponseWriter, r *http.Request) {
+	table, err := h.service.Table(r.Context(), pathID(r), h.frontendBase(r))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"table_id":      table.ID,
+		"slug":          table.Slug,
+		"qr_url":        table.QRURL,
+		"qr_image_data": table.QRImageData,
+		"table_number":  table.Number,
+		"table_status":  table.Status,
+		"table_seats":   table.Seats,
+	})
+}
+
+func (h *Handler) saveTableQRCode(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		ImageData string `json:"image_data"`
+	}
+	if !decode(w, r, &input) {
+		return
+	}
+	table, err := h.service.SaveTableQRCode(r.Context(), pathID(r), h.frontendBase(r), input.ImageData)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, table)
 }
 
 func (h *Handler) createCategory(w http.ResponseWriter, r *http.Request) {
@@ -256,17 +358,121 @@ func (h *Handler) updateMenuItem(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, updated)
 }
 
-func (h *Handler) analytics(w http.ResponseWriter, r *http.Request) {
-	sales, best, lowStock, err := h.service.Analytics(r.Context())
+func (h *Handler) publicCashPayment(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		AmountCents int64  `json:"amount_cents"`
+		Reference   string `json:"reference"`
+	}
+	if !decode(w, r, &input) {
+		return
+	}
+	order, err := h.service.PublicOrder(r.Context(), pathID(r), queryStr(r, "session_token", ""))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	order, payment, receipt, err := h.service.CreateCashPayment(r.Context(), order.ID, input.AmountCents, input.Reference, false)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"order": order, "payment": payment, "receipt": receipt})
+}
+
+func (h *Handler) publicMpesaPayment(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		AmountCents int64  `json:"amount_cents"`
+		PhoneNumber string `json:"phone_number"`
+	}
+	if !decode(w, r, &input) {
+		return
+	}
+	order, err := h.service.PublicOrder(r.Context(), pathID(r), queryStr(r, "session_token", ""))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	order, payment, receipt, err := h.service.CreateMpesaPayment(r.Context(), order.ID, input.PhoneNumber, input.AmountCents)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"order": order, "payment": payment, "receipt": receipt})
+}
+
+func (h *Handler) cashPayment(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		OrderID     int64  `json:"order_id"`
+		AmountCents int64  `json:"amount_cents"`
+		Reference   string `json:"reference"`
+	}
+	if !decode(w, r, &input) {
+		return
+	}
+	order, payment, receipt, err := h.service.CreateCashPayment(r.Context(), input.OrderID, input.AmountCents, input.Reference, true)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"order": order, "payment": payment, "receipt": receipt})
+}
+
+func (h *Handler) mpesaPayment(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		OrderID     int64  `json:"order_id"`
+		AmountCents int64  `json:"amount_cents"`
+		PhoneNumber string `json:"phone_number"`
+	}
+	if !decode(w, r, &input) {
+		return
+	}
+	order, payment, receipt, err := h.service.CreateMpesaPayment(r.Context(), input.OrderID, input.PhoneNumber, input.AmountCents)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"order": order, "payment": payment, "receipt": receipt})
+}
+
+func (h *Handler) confirmPayment(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Reference string `json:"reference"`
+	}
+	if !decode(w, r, &input) {
+		return
+	}
+	order, payment, receipt, err := h.service.ConfirmPayment(r.Context(), pathID(r), input.Reference)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"order": order, "payment": payment, "receipt": receipt})
+}
+
+func (h *Handler) receipt(w http.ResponseWriter, r *http.Request) {
+	receipt, err := h.service.Receipt(r.Context(), pathOrderID(r))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"daily_sales": sales, "best_sellers": best, "low_stock": lowStock})
+	if receipt == nil {
+		writeError(w, http.StatusNotFound, fmt.Errorf("receipt not found"))
+		return
+	}
+	writeJSON(w, http.StatusOK, receipt)
+}
+
+func (h *Handler) analytics(w http.ResponseWriter, r *http.Request) {
+	snapshot, err := h.service.Analytics(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, snapshot)
 }
 
 func (h *Handler) salesCSV(w http.ResponseWriter, r *http.Request) {
-	sales, _, _, err := h.service.Analytics(r.Context())
+	snapshot, err := h.service.Analytics(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -275,7 +481,7 @@ func (h *Handler) salesCSV(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", "attachment; filename=sales.csv")
 	out := csv.NewWriter(w)
 	_ = out.Write([]string{"day", "order_count", "revenue_cents"})
-	for _, row := range sales {
+	for _, row := range snapshot.DailySales {
 		_ = out.Write([]string{row.Day, fmt.Sprint(row.OrderCount), fmt.Sprint(row.RevenueCents)})
 	}
 	out.Flush()
@@ -331,6 +537,11 @@ func pathID(r *http.Request) int64 {
 	return id
 }
 
+func pathOrderID(r *http.Request) int64 {
+	id, _ := strconv.ParseInt(chi.URLParam(r, "orderID"), 10, 64)
+	return id
+}
+
 func queryInt(r *http.Request, key string, fallback int) int {
 	value, err := strconv.Atoi(r.URL.Query().Get(key))
 	if err != nil {
@@ -339,18 +550,26 @@ func queryInt(r *http.Request, key string, fallback int) int {
 	return value
 }
 
+func queryStr(r *http.Request, key string, fallback string) string {
+	value := strings.TrimSpace(r.URL.Query().Get(key))
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
 func frontendBase(r *http.Request) string {
 	if origin := r.Header.Get("Origin"); origin != "" {
-		return origin
+		return strings.TrimRight(origin, "/")
 	}
-	return "http://" + r.Host
+	return "http://" + strings.TrimRight(r.Host, "/")
 }
 
 func (h *Handler) frontendBase(r *http.Request) string {
 	if base := strings.TrimRight(h.config.FrontendURL, "/"); base != "" {
 		return base
 	}
-	return strings.TrimRight(frontendBase(r), "/")
+	return frontendBase(r)
 }
 
 func (h *Handler) decodeMenuItem(w http.ResponseWriter, r *http.Request) (repository.SaveMenuItemInput, bool) {
@@ -375,4 +594,19 @@ func (h *Handler) decodeMenuItem(w http.ResponseWriter, r *http.Request) (reposi
 	}, true
 }
 
-var _ = domain.RoleAdmin
+func canUpdateOrderStatus(role domain.Role, status string) bool {
+	switch role {
+	case domain.RoleAdmin, domain.RoleManager:
+		return true
+	case domain.RoleChef:
+		switch status {
+		case "new", "pending", "accepted", "preparing", "ready":
+			return true
+		}
+	case domain.RoleWaiter:
+		return status == "served"
+	case domain.RoleCashier:
+		return status == "paid"
+	}
+	return false
+}

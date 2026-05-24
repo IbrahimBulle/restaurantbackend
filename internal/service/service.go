@@ -4,40 +4,80 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
+	"time"
 
 	"restaurant/backend/internal/auth"
+	"restaurant/backend/internal/config"
 	"restaurant/backend/internal/domain"
 	"restaurant/backend/internal/realtime"
 	"restaurant/backend/internal/repository"
 )
 
 type Service struct {
-	repo      *repository.Repository
-	hub       *realtime.Hub
-	jwtSecret string
+	repo   *repository.Repository
+	hub    *realtime.Hub
+	config config.Config
 }
 
-func New(repo *repository.Repository, hub *realtime.Hub, jwtSecret string) *Service {
-	return &Service{repo: repo, hub: hub, jwtSecret: jwtSecret}
+func New(repo *repository.Repository, hub *realtime.Hub, cfg config.Config) *Service {
+	return &Service{repo: repo, hub: hub, config: cfg}
 }
 
-func (s *Service) Login(ctx context.Context, email, password string) (domain.User, string, error) {
+func (s *Service) Login(ctx context.Context, email, password string) (domain.User, string, string, error) {
 	user, hash, err := s.repo.GetUserAuthByEmail(ctx, email)
 	if err != nil {
-		return domain.User{}, "", errors.New("invalid credentials")
+		return domain.User{}, "", "", errors.New("invalid credentials")
 	}
 	if !user.Active || !auth.CheckPassword(hash, password) {
-		return domain.User{}, "", errors.New("invalid credentials")
+		return domain.User{}, "", "", errors.New("invalid credentials")
 	}
-	token, err := auth.IssueToken(s.jwtSecret, user)
-	return user, token, err
+	accessToken, err := auth.IssueAccessToken(s.config.JWTSecret, user)
+	if err != nil {
+		return domain.User{}, "", "", err
+	}
+	refreshToken, err := auth.IssueRefreshToken(s.config.JWTSecret, user)
+	if err != nil {
+		return domain.User{}, "", "", err
+	}
+	return user, accessToken, refreshToken, nil
+}
+
+func (s *Service) Refresh(ctx context.Context, refreshToken string) (domain.User, string, string, error) {
+	claims, err := auth.ParseTokenOfType(s.config.JWTSecret, refreshToken, auth.TokenTypeRefresh)
+	if err != nil {
+		return domain.User{}, "", "", errors.New("invalid refresh token")
+	}
+	user, _, err := s.repo.GetUserAuthByEmail(ctx, claims.Email)
+	if err != nil {
+		return domain.User{}, "", "", errors.New("invalid refresh token")
+	}
+	if !user.Active {
+		return domain.User{}, "", "", errors.New("user is inactive")
+	}
+	accessToken, err := auth.IssueAccessToken(s.config.JWTSecret, user)
+	if err != nil {
+		return domain.User{}, "", "", err
+	}
+	nextRefreshToken, err := auth.IssueRefreshToken(s.config.JWTSecret, user)
+	if err != nil {
+		return domain.User{}, "", "", err
+	}
+	return user, accessToken, nextRefreshToken, nil
 }
 
 func (s *Service) CreateStaff(ctx context.Context, name, email, password, role string) (domain.User, error) {
+	name = strings.TrimSpace(name)
+	email = strings.TrimSpace(strings.ToLower(email))
+	role = strings.TrimSpace(strings.ToLower(role))
 	if name == "" || email == "" || len(password) < 8 {
-		return domain.User{}, errors.New("name, valid email, and password with 8+ characters are required")
+		return domain.User{}, errors.New("name, email, and password with 8+ characters are required")
+	}
+	if !isValidRole(role) {
+		return domain.User{}, errors.New("invalid role")
 	}
 	hash, err := auth.HashPassword(password)
 	if err != nil {
@@ -55,27 +95,135 @@ func (s *Service) ListTables(ctx context.Context, baseURL string) ([]domain.Tabl
 	if err != nil {
 		return nil, err
 	}
-	baseURL = strings.TrimRight(baseURL, "/")
 	for i := range tables {
-		tables[i].QRURL = baseURL + "/order/" + tables[i].QRToken
+		if updated, changed := s.withTableURL(baseURL, tables[i]); changed {
+			tables[i] = updated
+			if _, err := s.repo.SaveQRCode(ctx, tables[i].ID, tables[i].QRURL, tables[i].QRImageData); err != nil {
+				return nil, err
+			}
+		}
 	}
 	return tables, nil
 }
 
-func (s *Service) CreateTable(ctx context.Context, number string, seats int) (domain.Table, error) {
+func (s *Service) Table(ctx context.Context, id int64, baseURL string) (domain.Table, error) {
+	table, err := s.repo.GetTableByID(ctx, id)
+	if err != nil {
+		return domain.Table{}, err
+	}
+	if updated, changed := s.withTableURL(baseURL, table); changed {
+		table = updated
+		return s.repo.SaveQRCode(ctx, table.ID, table.QRURL, table.QRImageData)
+	}
+	return table, nil
+}
+
+func (s *Service) CreateTable(ctx context.Context, number string, seats int, baseURL string) (domain.Table, error) {
 	number = strings.TrimSpace(number)
 	if number == "" || seats <= 0 {
 		return domain.Table{}, errors.New("table number and seats are required")
 	}
-	table, err := s.repo.CreateTable(ctx, number, seats, "table-"+randomToken(8))
+
+	table, err := s.repo.CreateTable(ctx, number, seats, slugifyTable(number), "qr-"+randomToken(8))
+	if err != nil {
+		return domain.Table{}, err
+	}
+	table, _ = s.withTableURL(baseURL, table)
+	table, err = s.repo.SaveQRCode(ctx, table.ID, table.QRURL, table.QRImageData)
+	if err != nil {
+		return domain.Table{}, err
+	}
+	s.hub.Broadcast(realtime.Event{Type: "table.created", Data: table})
+	return table, nil
+}
+
+func (s *Service) SaveTableQRCode(ctx context.Context, tableID int64, baseURL, imageData string) (domain.Table, error) {
+	table, err := s.repo.GetTableByID(ctx, tableID)
+	if err != nil {
+		return domain.Table{}, err
+	}
+	table, _ = s.withTableURL(baseURL, table)
+	table, err = s.repo.SaveQRCode(ctx, table.ID, table.QRURL, strings.TrimSpace(imageData))
 	if err == nil {
-		s.hub.Broadcast(realtime.Event{Type: "table.created", Data: table})
+		s.hub.Broadcast(realtime.Event{Type: "table.updated", Data: table})
 	}
 	return table, err
 }
 
-func (s *Service) ResolveTable(ctx context.Context, token string) (domain.Table, error) {
-	return s.repo.GetTableByToken(ctx, token)
+func (s *Service) ResolveTableContext(ctx context.Context, identifier, sessionToken, customerName, baseURL string) (domain.TableContext, error) {
+	table, err := s.repo.GetTableByIdentifier(ctx, strings.TrimSpace(identifier))
+	if err != nil {
+		return domain.TableContext{}, err
+	}
+
+	if updated, changed := s.withTableURL(baseURL, table); changed {
+		table = updated
+		table, err = s.repo.SaveQRCode(ctx, table.ID, table.QRURL, table.QRImageData)
+		if err != nil {
+			return domain.TableContext{}, err
+		}
+	}
+
+	var session domain.TableSession
+	if strings.TrimSpace(sessionToken) != "" {
+		current, err := s.repo.GetSessionByToken(ctx, strings.TrimSpace(sessionToken))
+		if err == nil && current.TableID == table.ID && current.Status == "active" {
+			session, err = s.repo.TouchSession(ctx, current.Token, customerName)
+			if err != nil {
+				return domain.TableContext{}, err
+			}
+		}
+	}
+	if session.ID == 0 {
+		session, err = s.repo.CreateSession(ctx, repository.CreateSessionInput{
+			TableID:      table.ID,
+			Token:        "session-" + randomToken(10),
+			CustomerName: strings.TrimSpace(customerName),
+		})
+		if err != nil {
+			return domain.TableContext{}, err
+		}
+	}
+	session.TableNumber = table.Number
+
+	order, err := s.repo.GetLatestOrderForSession(ctx, session.ID)
+	if err != nil {
+		return domain.TableContext{}, err
+	}
+
+	return domain.TableContext{
+		Table:       table,
+		Session:     session,
+		ActiveOrder: order,
+	}, nil
+}
+
+func (s *Service) SessionContext(ctx context.Context, sessionToken, baseURL string) (domain.TableContext, error) {
+	session, err := s.repo.GetSessionByToken(ctx, strings.TrimSpace(sessionToken))
+	if err != nil {
+		return domain.TableContext{}, err
+	}
+	table, err := s.repo.GetTableByID(ctx, session.TableID)
+	if err != nil {
+		return domain.TableContext{}, err
+	}
+	if updated, changed := s.withTableURL(baseURL, table); changed {
+		table = updated
+		table, err = s.repo.SaveQRCode(ctx, table.ID, table.QRURL, table.QRImageData)
+		if err != nil {
+			return domain.TableContext{}, err
+		}
+	}
+	session.TableNumber = table.Number
+	order, err := s.repo.GetLatestOrderForSession(ctx, session.ID)
+	if err != nil {
+		return domain.TableContext{}, err
+	}
+	return domain.TableContext{
+		Table:       table,
+		Session:     session,
+		ActiveOrder: order,
+	}, nil
 }
 
 func (s *Service) Menu(ctx context.Context) ([]domain.Category, []domain.MenuItem, error) {
@@ -115,6 +263,12 @@ func (s *Service) UpdateMenuItem(ctx context.Context, id int64, input repository
 }
 
 func (s *Service) PlaceOrder(ctx context.Context, input repository.CreateOrderInput) (domain.Order, error) {
+	if strings.TrimSpace(input.CustomerName) == "" {
+		input.CustomerName = "Guest"
+	}
+	if strings.TrimSpace(input.Source) == "" {
+		input.Source = "qr"
+	}
 	order, err := s.repo.CreateOrder(ctx, input)
 	if err == nil {
 		s.hub.Broadcast(realtime.Event{Type: "order.created", Data: order})
@@ -126,29 +280,285 @@ func (s *Service) Orders(ctx context.Context, limit int) ([]domain.Order, error)
 	return s.repo.ListOrders(ctx, limit)
 }
 
+func (s *Service) Order(ctx context.Context, id int64) (domain.Order, error) {
+	return s.repo.GetOrder(ctx, id)
+}
+
+func (s *Service) PublicOrder(ctx context.Context, id int64, sessionToken string) (domain.Order, error) {
+	order, err := s.repo.GetOrder(ctx, id)
+	if err != nil {
+		return domain.Order{}, err
+	}
+	if strings.TrimSpace(sessionToken) == "" {
+		return domain.Order{}, errors.New("session token is required")
+	}
+	session, err := s.repo.GetSessionByToken(ctx, sessionToken)
+	if err != nil {
+		return domain.Order{}, errors.New("invalid session token")
+	}
+	if order.SessionID == nil || *order.SessionID != session.ID {
+		return domain.Order{}, errors.New("order does not belong to this table session")
+	}
+	return order, nil
+}
+
 func (s *Service) UpdateOrderStatus(ctx context.Context, id int64, status string) (domain.Order, error) {
+	status = normalizeOrderStatus(status)
+	if !validOrderStatus(status) {
+		return domain.Order{}, errors.New("invalid order status")
+	}
 	order, err := s.repo.UpdateOrderStatus(ctx, id, status)
-	if err == nil {
-		s.hub.Broadcast(realtime.Event{Type: "order.updated", Data: order})
+	if err != nil {
+		return domain.Order{}, err
 	}
-	return order, err
+	if status == "paid" {
+		if err := s.finalizeSessionIfComplete(ctx, order); err != nil {
+			return domain.Order{}, err
+		}
+		order, err = s.repo.GetOrder(ctx, id)
+		if err != nil {
+			return domain.Order{}, err
+		}
+	}
+	s.hub.Broadcast(realtime.Event{Type: "order.updated", Data: order})
+	return order, nil
 }
 
-func (s *Service) Pay(ctx context.Context, orderID int64, method string, amount int64, reference string) (domain.Payment, error) {
-	status := "paid"
-	if method == "mpesa" && reference == "" {
-		status = "pending"
-		reference = "mpesa-stk-placeholder"
+func (s *Service) CreateCashPayment(ctx context.Context, orderID int64, amount int64, reference string, confirmNow bool) (domain.Order, domain.Payment, *domain.Receipt, error) {
+	order, err := s.repo.GetOrder(ctx, orderID)
+	if err != nil {
+		return domain.Order{}, domain.Payment{}, nil, err
 	}
-	payment, err := s.repo.CreatePayment(ctx, orderID, method, amount, status, reference)
-	if err == nil {
-		s.hub.Broadcast(realtime.Event{Type: "payment.updated", Data: payment})
+	if amount <= 0 {
+		amount = order.TotalCents
 	}
-	return payment, err
+	status := "pending"
+	if confirmNow {
+		status = "paid"
+	}
+	payment, err := s.repo.CreatePayment(ctx, repository.CreatePaymentInput{
+		OrderID:      orderID,
+		Method:       "cash",
+		AmountCents:  amount,
+		Status:       status,
+		Reference:    strings.TrimSpace(reference),
+		Provider:     "cash",
+		MetadataJSON: `{"channel":"cash"}`,
+	})
+	if err != nil {
+		return domain.Order{}, domain.Payment{}, nil, err
+	}
+	s.hub.Broadcast(realtime.Event{Type: "payment.updated", Data: payment})
+	if !confirmNow {
+		order, err = s.repo.GetOrder(ctx, orderID)
+		return order, payment, order.Receipt, err
+	}
+	return s.confirmSettledPayment(ctx, payment)
 }
 
-func (s *Service) Analytics(ctx context.Context) ([]domain.SalesPoint, []domain.BestSeller, []domain.Ingredient, error) {
+func (s *Service) CreateMpesaPayment(ctx context.Context, orderID int64, phoneNumber string, amount int64) (domain.Order, domain.Payment, *domain.Receipt, error) {
+	order, err := s.repo.GetOrder(ctx, orderID)
+	if err != nil {
+		return domain.Order{}, domain.Payment{}, nil, err
+	}
+	if amount <= 0 {
+		amount = order.TotalCents
+	}
+	reference := "MPESA-" + strings.ToUpper(randomToken(5))
+	metadata, _ := json.Marshal(map[string]any{
+		"short_code":   s.config.MPesaShortCode,
+		"callback_url": s.config.MPesaCallbackURL,
+		"phone_number": strings.TrimSpace(phoneNumber),
+		"channel":      "stk_push",
+	})
+	status := "pending"
+	if s.config.MPesaAutoApprove {
+		status = "paid"
+	}
+	payment, err := s.repo.CreatePayment(ctx, repository.CreatePaymentInput{
+		OrderID:      orderID,
+		Method:       "mpesa",
+		AmountCents:  amount,
+		Status:       status,
+		Reference:    reference,
+		PhoneNumber:  strings.TrimSpace(phoneNumber),
+		Provider:     "mpesa",
+		MetadataJSON: string(metadata),
+	})
+	if err != nil {
+		return domain.Order{}, domain.Payment{}, nil, err
+	}
+	s.hub.Broadcast(realtime.Event{Type: "payment.updated", Data: payment})
+	if !s.config.MPesaAutoApprove {
+		order, err = s.repo.GetOrder(ctx, orderID)
+		return order, payment, order.Receipt, err
+	}
+	return s.confirmSettledPayment(ctx, payment)
+}
+
+func (s *Service) ConfirmPayment(ctx context.Context, paymentID int64, reference string) (domain.Order, domain.Payment, *domain.Receipt, error) {
+	payment, err := s.repo.ConfirmPayment(ctx, paymentID, reference)
+	if err != nil {
+		return domain.Order{}, domain.Payment{}, nil, err
+	}
+	return s.confirmSettledPayment(ctx, payment)
+}
+
+func (s *Service) Receipt(ctx context.Context, orderID int64) (*domain.Receipt, error) {
+	return s.repo.GetReceiptByOrderID(ctx, orderID)
+}
+
+func (s *Service) Analytics(ctx context.Context) (domain.AnalyticsSnapshot, error) {
 	return s.repo.Analytics(ctx)
+}
+
+func (s *Service) confirmSettledPayment(ctx context.Context, payment domain.Payment) (domain.Order, domain.Payment, *domain.Receipt, error) {
+	order, err := s.repo.UpdateOrderPaymentStatus(ctx, payment.OrderID, "paid", true)
+	if err != nil {
+		return domain.Order{}, domain.Payment{}, nil, err
+	}
+	receipt, err := s.ensureReceipt(ctx, order, payment)
+	if err != nil {
+		return domain.Order{}, domain.Payment{}, nil, err
+	}
+	order.Receipt = receipt
+	if err := s.finalizeSessionIfComplete(ctx, order); err != nil {
+		return domain.Order{}, domain.Payment{}, nil, err
+	}
+	order, err = s.repo.GetOrder(ctx, order.ID)
+	if err != nil {
+		return domain.Order{}, domain.Payment{}, nil, err
+	}
+	s.hub.Broadcast(realtime.Event{Type: "payment.updated", Data: payment})
+	s.hub.Broadcast(realtime.Event{Type: "order.updated", Data: order})
+	if receipt != nil {
+		s.hub.Broadcast(realtime.Event{Type: "receipt.created", Data: receipt})
+	}
+	return order, payment, receipt, nil
+}
+
+func (s *Service) ensureReceipt(ctx context.Context, order domain.Order, payment domain.Payment) (*domain.Receipt, error) {
+	existing, err := s.repo.GetReceiptByOrderID(ctx, order.ID)
+	if err != nil {
+		return nil, err
+	}
+	if existing != nil {
+		return existing, nil
+	}
+	payload, err := json.Marshal(map[string]any{
+		"order_id":       order.ID,
+		"table_number":   order.TableNumber,
+		"customer_name":  order.CustomerName,
+		"status":         order.Status,
+		"payment_status": order.PaymentStatus,
+		"total_cents":    order.TotalCents,
+		"vat_cents":      order.VATCents,
+		"payment": map[string]any{
+			"id":           payment.ID,
+			"method":       payment.Method,
+			"reference":    payment.Reference,
+			"amount_cents": payment.AmountCents,
+			"phone_number": payment.PhoneNumber,
+			"provider":     payment.Provider,
+			"confirmed_at": payment.ConfirmedAt,
+		},
+		"items":      order.Items,
+		"issued_at":  time.Now().UTC(),
+		"restaurant": "QRDine",
+	})
+	if err != nil {
+		return nil, err
+	}
+	receipt, err := s.repo.CreateReceipt(ctx, order.ID, &payment.ID, fmt.Sprintf("RCPT-%s-%04d", time.Now().Format("20060102"), order.ID), string(payload))
+	if err != nil {
+		return nil, err
+	}
+	return &receipt, nil
+}
+
+func (s *Service) finalizeSessionIfComplete(ctx context.Context, order domain.Order) error {
+	if order.SessionID == nil || order.TableID == nil {
+		return nil
+	}
+	hasOpenOrders, err := s.repo.SessionHasOpenOrders(ctx, *order.SessionID)
+	if err != nil {
+		return err
+	}
+	if hasOpenOrders {
+		return nil
+	}
+	if err := s.repo.CloseSession(ctx, *order.SessionID); err != nil {
+		return err
+	}
+	_, err = s.repo.UpdateTableStatus(ctx, *order.TableID, "available")
+	return err
+}
+
+func (s *Service) withTableURL(baseURL string, table domain.Table) (domain.Table, bool) {
+	slug := table.Slug
+	if slug == "" {
+		slug = table.QRToken
+	}
+	qrURL := strings.TrimRight(baseURL, "/") + "/order/" + slug
+	changed := table.QRURL != qrURL
+	table.Slug = slug
+	table.QRURL = qrURL
+	return table, changed
+}
+
+func normalizeOrderStatus(status string) string {
+	status = strings.TrimSpace(strings.ToLower(status))
+	if status == "pending" {
+		return "new"
+	}
+	return status
+}
+
+func validOrderStatus(status string) bool {
+	switch status {
+	case "new", "accepted", "preparing", "ready", "served", "paid", "cancelled":
+		return true
+	default:
+		return false
+	}
+}
+
+func isValidRole(role string) bool {
+	switch domain.Role(role) {
+	case domain.RoleAdmin, domain.RoleChef, domain.RoleWaiter, domain.RoleCashier, domain.RoleManager:
+		return true
+	default:
+		return false
+	}
+}
+
+func slugifyTable(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return "table-" + randomToken(4)
+	}
+	var builder strings.Builder
+	lastDash := false
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			builder.WriteRune(r)
+			lastDash = false
+		default:
+			if !lastDash {
+				builder.WriteRune('-')
+				lastDash = true
+			}
+		}
+	}
+	slug := strings.Trim(builder.String(), "-")
+	if slug == "" {
+		slug = "table-" + randomToken(4)
+	}
+	if !strings.HasPrefix(slug, "table-") {
+		slug = "table-" + slug
+	}
+	return slug
 }
 
 func randomToken(size int) string {

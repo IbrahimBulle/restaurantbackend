@@ -8,16 +8,18 @@ package database
 import (
 	"context"
 	"database/sql"
+	"time"
 )
 
 const createOrder = `-- name: CreateOrder :one
-INSERT INTO orders (table_id, customer_name, source, subtotal_cents, vat_cents, total_cents)
-VALUES (?, ?, ?, ?, ?, ?)
-RETURNING id, table_id, customer_name, status, subtotal_cents, vat_cents, total_cents, source, created_at, updated_at
+INSERT INTO orders (table_id, session_id, customer_name, status, payment_status, source, subtotal_cents, vat_cents, total_cents)
+VALUES (?, ?, ?, 'new', 'unpaid', ?, ?, ?, ?)
+RETURNING id, table_id, '' AS table_number, session_id, customer_name, status, payment_status, subtotal_cents, vat_cents, total_cents, source, created_at, updated_at
 `
 
 type CreateOrderParams struct {
 	TableID       sql.NullInt64 `json:"table_id"`
+	SessionID     sql.NullInt64 `json:"session_id"`
 	CustomerName  string        `json:"customer_name"`
 	Source        string        `json:"source"`
 	SubtotalCents int64         `json:"subtotal_cents"`
@@ -25,21 +27,41 @@ type CreateOrderParams struct {
 	TotalCents    int64         `json:"total_cents"`
 }
 
-func (q *Queries) CreateOrder(ctx context.Context, arg CreateOrderParams) (Order, error) {
+type CreateOrderRow struct {
+	ID            int64         `json:"id"`
+	TableID       sql.NullInt64 `json:"table_id"`
+	Column3       string        `json:"column_3"`
+	SessionID     sql.NullInt64 `json:"session_id"`
+	CustomerName  string        `json:"customer_name"`
+	Status        string        `json:"status"`
+	PaymentStatus string        `json:"payment_status"`
+	SubtotalCents int64         `json:"subtotal_cents"`
+	VatCents      int64         `json:"vat_cents"`
+	TotalCents    int64         `json:"total_cents"`
+	Source        string        `json:"source"`
+	CreatedAt     time.Time     `json:"created_at"`
+	UpdatedAt     time.Time     `json:"updated_at"`
+}
+
+func (q *Queries) CreateOrder(ctx context.Context, arg CreateOrderParams) (CreateOrderRow, error) {
 	row := q.db.QueryRowContext(ctx, createOrder,
 		arg.TableID,
+		arg.SessionID,
 		arg.CustomerName,
 		arg.Source,
 		arg.SubtotalCents,
 		arg.VatCents,
 		arg.TotalCents,
 	)
-	var i Order
+	var i CreateOrderRow
 	err := row.Scan(
 		&i.ID,
 		&i.TableID,
+		&i.Column3,
+		&i.SessionID,
 		&i.CustomerName,
 		&i.Status,
+		&i.PaymentStatus,
 		&i.SubtotalCents,
 		&i.VatCents,
 		&i.TotalCents,
@@ -104,6 +126,65 @@ func (q *Queries) DeductIngredientStock(ctx context.Context, arg DeductIngredien
 	return err
 }
 
+const getLatestOrderForSession = `-- name: GetLatestOrderForSession :one
+SELECT
+  o.id,
+  o.table_id,
+  COALESCE(t.number, '') AS table_number,
+  o.session_id,
+  o.customer_name,
+  o.status,
+  COALESCE(o.payment_status, 'unpaid') AS payment_status,
+  o.subtotal_cents,
+  o.vat_cents,
+  o.total_cents,
+  o.source,
+  o.created_at,
+  o.updated_at
+FROM orders o
+LEFT JOIN restaurant_tables t ON t.id = o.table_id
+WHERE o.session_id = ?
+ORDER BY o.created_at DESC
+LIMIT 1
+`
+
+type GetLatestOrderForSessionRow struct {
+	ID            int64         `json:"id"`
+	TableID       sql.NullInt64 `json:"table_id"`
+	TableNumber   string        `json:"table_number"`
+	SessionID     sql.NullInt64 `json:"session_id"`
+	CustomerName  string        `json:"customer_name"`
+	Status        string        `json:"status"`
+	PaymentStatus string        `json:"payment_status"`
+	SubtotalCents int64         `json:"subtotal_cents"`
+	VatCents      int64         `json:"vat_cents"`
+	TotalCents    int64         `json:"total_cents"`
+	Source        string        `json:"source"`
+	CreatedAt     time.Time     `json:"created_at"`
+	UpdatedAt     time.Time     `json:"updated_at"`
+}
+
+func (q *Queries) GetLatestOrderForSession(ctx context.Context, sessionID sql.NullInt64) (GetLatestOrderForSessionRow, error) {
+	row := q.db.QueryRowContext(ctx, getLatestOrderForSession, sessionID)
+	var i GetLatestOrderForSessionRow
+	err := row.Scan(
+		&i.ID,
+		&i.TableID,
+		&i.TableNumber,
+		&i.SessionID,
+		&i.CustomerName,
+		&i.Status,
+		&i.PaymentStatus,
+		&i.SubtotalCents,
+		&i.VatCents,
+		&i.TotalCents,
+		&i.Source,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getMenuItem = `-- name: GetMenuItem :one
 SELECT id, category_id, name, description, price_cents, image_url, active, created_at FROM menu_items WHERE id = ?
 `
@@ -124,23 +205,104 @@ func (q *Queries) GetMenuItem(ctx context.Context, id int64) (MenuItem, error) {
 	return i, err
 }
 
-const listOrderItems = `-- name: ListOrderItems :many
-SELECT id, order_id, menu_item_id, quantity, unit_price_cents, notes, status FROM order_items WHERE order_id = ?
+const getOrder = `-- name: GetOrder :one
+SELECT
+  o.id,
+  o.table_id,
+  COALESCE(t.number, '') AS table_number,
+  o.session_id,
+  o.customer_name,
+  o.status,
+  COALESCE(o.payment_status, 'unpaid') AS payment_status,
+  o.subtotal_cents,
+  o.vat_cents,
+  o.total_cents,
+  o.source,
+  o.created_at,
+  o.updated_at
+FROM orders o
+LEFT JOIN restaurant_tables t ON t.id = o.table_id
+WHERE o.id = ?
+LIMIT 1
 `
 
-func (q *Queries) ListOrderItems(ctx context.Context, orderID int64) ([]OrderItem, error) {
+type GetOrderRow struct {
+	ID            int64         `json:"id"`
+	TableID       sql.NullInt64 `json:"table_id"`
+	TableNumber   string        `json:"table_number"`
+	SessionID     sql.NullInt64 `json:"session_id"`
+	CustomerName  string        `json:"customer_name"`
+	Status        string        `json:"status"`
+	PaymentStatus string        `json:"payment_status"`
+	SubtotalCents int64         `json:"subtotal_cents"`
+	VatCents      int64         `json:"vat_cents"`
+	TotalCents    int64         `json:"total_cents"`
+	Source        string        `json:"source"`
+	CreatedAt     time.Time     `json:"created_at"`
+	UpdatedAt     time.Time     `json:"updated_at"`
+}
+
+func (q *Queries) GetOrder(ctx context.Context, id int64) (GetOrderRow, error) {
+	row := q.db.QueryRowContext(ctx, getOrder, id)
+	var i GetOrderRow
+	err := row.Scan(
+		&i.ID,
+		&i.TableID,
+		&i.TableNumber,
+		&i.SessionID,
+		&i.CustomerName,
+		&i.Status,
+		&i.PaymentStatus,
+		&i.SubtotalCents,
+		&i.VatCents,
+		&i.TotalCents,
+		&i.Source,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const listOrderItems = `-- name: ListOrderItems :many
+SELECT
+  oi.id,
+  oi.order_id,
+  oi.menu_item_id,
+  COALESCE(mi.name, '') AS menu_item_name,
+  oi.quantity,
+  oi.unit_price_cents,
+  oi.notes,
+  oi.status
+FROM order_items oi
+JOIN menu_items mi ON mi.id = oi.menu_item_id
+WHERE oi.order_id = ?
+`
+
+type ListOrderItemsRow struct {
+	ID             int64  `json:"id"`
+	OrderID        int64  `json:"order_id"`
+	MenuItemID     int64  `json:"menu_item_id"`
+	MenuItemName   string `json:"menu_item_name"`
+	Quantity       int64  `json:"quantity"`
+	UnitPriceCents int64  `json:"unit_price_cents"`
+	Notes          string `json:"notes"`
+	Status         string `json:"status"`
+}
+
+func (q *Queries) ListOrderItems(ctx context.Context, orderID int64) ([]ListOrderItemsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listOrderItems, orderID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []OrderItem
+	var items []ListOrderItemsRow
 	for rows.Next() {
-		var i OrderItem
+		var i ListOrderItemsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.OrderID,
 			&i.MenuItemID,
+			&i.MenuItemName,
 			&i.Quantity,
 			&i.UnitPriceCents,
 			&i.Notes,
@@ -160,26 +322,59 @@ func (q *Queries) ListOrderItems(ctx context.Context, orderID int64) ([]OrderIte
 }
 
 const listOrders = `-- name: ListOrders :many
-SELECT id, table_id, customer_name, status, subtotal_cents, vat_cents, total_cents, source, created_at, updated_at
-FROM orders
+SELECT
+  o.id,
+  o.table_id,
+  COALESCE(t.number, '') AS table_number,
+  o.session_id,
+  o.customer_name,
+  o.status,
+  COALESCE(o.payment_status, 'unpaid') AS payment_status,
+  o.subtotal_cents,
+  o.vat_cents,
+  o.total_cents,
+  o.source,
+  o.created_at,
+  o.updated_at
+FROM orders o
+LEFT JOIN restaurant_tables t ON t.id = o.table_id
 ORDER BY created_at DESC
 LIMIT ?
 `
 
-func (q *Queries) ListOrders(ctx context.Context, limit int64) ([]Order, error) {
+type ListOrdersRow struct {
+	ID            int64         `json:"id"`
+	TableID       sql.NullInt64 `json:"table_id"`
+	TableNumber   string        `json:"table_number"`
+	SessionID     sql.NullInt64 `json:"session_id"`
+	CustomerName  string        `json:"customer_name"`
+	Status        string        `json:"status"`
+	PaymentStatus string        `json:"payment_status"`
+	SubtotalCents int64         `json:"subtotal_cents"`
+	VatCents      int64         `json:"vat_cents"`
+	TotalCents    int64         `json:"total_cents"`
+	Source        string        `json:"source"`
+	CreatedAt     time.Time     `json:"created_at"`
+	UpdatedAt     time.Time     `json:"updated_at"`
+}
+
+func (q *Queries) ListOrders(ctx context.Context, limit int64) ([]ListOrdersRow, error) {
 	rows, err := q.db.QueryContext(ctx, listOrders, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Order
+	var items []ListOrdersRow
 	for rows.Next() {
-		var i Order
+		var i ListOrdersRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.TableID,
+			&i.TableNumber,
+			&i.SessionID,
 			&i.CustomerName,
 			&i.Status,
+			&i.PaymentStatus,
 			&i.SubtotalCents,
 			&i.VatCents,
 			&i.TotalCents,
@@ -200,9 +395,59 @@ func (q *Queries) ListOrders(ctx context.Context, limit int64) ([]Order, error) 
 	return items, nil
 }
 
+const updateOrderPaymentStatus = `-- name: UpdateOrderPaymentStatus :one
+UPDATE orders
+SET payment_status = ?, status = CASE WHEN ? = 'paid' THEN 'paid' ELSE status END, updated_at = CURRENT_TIMESTAMP
+WHERE id = ?
+RETURNING id, table_id, '' AS table_number, session_id, customer_name, status, payment_status, subtotal_cents, vat_cents, total_cents, source, created_at, updated_at
+`
+
+type UpdateOrderPaymentStatusParams struct {
+	PaymentStatus string      `json:"payment_status"`
+	Column2       interface{} `json:"column_2"`
+	ID            int64       `json:"id"`
+}
+
+type UpdateOrderPaymentStatusRow struct {
+	ID            int64         `json:"id"`
+	TableID       sql.NullInt64 `json:"table_id"`
+	Column3       string        `json:"column_3"`
+	SessionID     sql.NullInt64 `json:"session_id"`
+	CustomerName  string        `json:"customer_name"`
+	Status        string        `json:"status"`
+	PaymentStatus string        `json:"payment_status"`
+	SubtotalCents int64         `json:"subtotal_cents"`
+	VatCents      int64         `json:"vat_cents"`
+	TotalCents    int64         `json:"total_cents"`
+	Source        string        `json:"source"`
+	CreatedAt     time.Time     `json:"created_at"`
+	UpdatedAt     time.Time     `json:"updated_at"`
+}
+
+func (q *Queries) UpdateOrderPaymentStatus(ctx context.Context, arg UpdateOrderPaymentStatusParams) (UpdateOrderPaymentStatusRow, error) {
+	row := q.db.QueryRowContext(ctx, updateOrderPaymentStatus, arg.PaymentStatus, arg.Column2, arg.ID)
+	var i UpdateOrderPaymentStatusRow
+	err := row.Scan(
+		&i.ID,
+		&i.TableID,
+		&i.Column3,
+		&i.SessionID,
+		&i.CustomerName,
+		&i.Status,
+		&i.PaymentStatus,
+		&i.SubtotalCents,
+		&i.VatCents,
+		&i.TotalCents,
+		&i.Source,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const updateOrderStatus = `-- name: UpdateOrderStatus :one
 UPDATE orders SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
-RETURNING id, table_id, customer_name, status, subtotal_cents, vat_cents, total_cents, source, created_at, updated_at
+RETURNING id, table_id, '' AS table_number, session_id, customer_name, status, payment_status, subtotal_cents, vat_cents, total_cents, source, created_at, updated_at
 `
 
 type UpdateOrderStatusParams struct {
@@ -210,14 +455,33 @@ type UpdateOrderStatusParams struct {
 	ID     int64  `json:"id"`
 }
 
-func (q *Queries) UpdateOrderStatus(ctx context.Context, arg UpdateOrderStatusParams) (Order, error) {
+type UpdateOrderStatusRow struct {
+	ID            int64         `json:"id"`
+	TableID       sql.NullInt64 `json:"table_id"`
+	Column3       string        `json:"column_3"`
+	SessionID     sql.NullInt64 `json:"session_id"`
+	CustomerName  string        `json:"customer_name"`
+	Status        string        `json:"status"`
+	PaymentStatus string        `json:"payment_status"`
+	SubtotalCents int64         `json:"subtotal_cents"`
+	VatCents      int64         `json:"vat_cents"`
+	TotalCents    int64         `json:"total_cents"`
+	Source        string        `json:"source"`
+	CreatedAt     time.Time     `json:"created_at"`
+	UpdatedAt     time.Time     `json:"updated_at"`
+}
+
+func (q *Queries) UpdateOrderStatus(ctx context.Context, arg UpdateOrderStatusParams) (UpdateOrderStatusRow, error) {
 	row := q.db.QueryRowContext(ctx, updateOrderStatus, arg.Status, arg.ID)
-	var i Order
+	var i UpdateOrderStatusRow
 	err := row.Scan(
 		&i.ID,
 		&i.TableID,
+		&i.Column3,
+		&i.SessionID,
 		&i.CustomerName,
 		&i.Status,
+		&i.PaymentStatus,
 		&i.SubtotalCents,
 		&i.VatCents,
 		&i.TotalCents,

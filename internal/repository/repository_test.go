@@ -57,15 +57,20 @@ func TestListMethodsReturnEmptySlicesWhenNoRows(t *testing.T) {
 		t.Fatalf("expected no order items, got %d", len(items))
 	}
 
-	sales, best, lowStock, err := repo.Analytics(ctx)
+	snapshot, err := repo.Analytics(ctx)
 	if err != nil {
 		t.Fatalf("Analytics returned error: %v", err)
 	}
-	if sales == nil || best == nil || lowStock == nil {
+	if snapshot.DailySales == nil || snapshot.BestSellers == nil || snapshot.LowStock == nil || snapshot.PaymentMethods == nil {
 		t.Fatal("expected analytics slices to be non-nil")
 	}
-	if len(sales) != 0 || len(best) != 0 || len(lowStock) != 0 {
-		t.Fatalf("expected empty analytics slices, got sales=%d best=%d lowStock=%d", len(sales), len(best), len(lowStock))
+	if len(snapshot.DailySales) != 0 || len(snapshot.BestSellers) != 0 || len(snapshot.LowStock) != 0 {
+		t.Fatalf(
+			"expected empty analytics slices, got sales=%d best=%d lowStock=%d",
+			len(snapshot.DailySales),
+			len(snapshot.BestSellers),
+			len(snapshot.LowStock),
+		)
 	}
 }
 
@@ -117,14 +122,14 @@ func TestAnalyticsReleasesSingleSQLiteConnection(t *testing.T) {
 		t.Fatalf("UpdateOrderStatus returned error: %v", err)
 	}
 
-	sales, best, _, err := repo.Analytics(ctx)
+	snapshot, err := repo.Analytics(ctx)
 	if err != nil {
 		t.Fatalf("Analytics returned error: %v", err)
 	}
-	if len(sales) == 0 {
+	if len(snapshot.DailySales) == 0 {
 		t.Fatal("expected at least one sales data point")
 	}
-	if len(best) == 0 {
+	if len(snapshot.BestSellers) == 0 {
 		t.Fatal("expected at least one best seller")
 	}
 }

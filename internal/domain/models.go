@@ -12,6 +12,10 @@ const (
 	RoleWaiter  Role = "waiter"
 )
 
+func StaffRoles() []Role {
+	return []Role{RoleAdmin, RoleChef, RoleCashier, RoleWaiter, RoleManager}
+}
+
 type User struct {
 	ID        int64     `json:"id"`
 	Name      string    `json:"name"`
@@ -22,13 +26,34 @@ type User struct {
 }
 
 type Table struct {
-	ID        int64     `json:"id"`
-	Number    string    `json:"number"`
-	Seats     int       `json:"seats"`
-	Status    string    `json:"status"`
-	QRToken   string    `json:"qr_token"`
-	QRURL     string    `json:"qr_url"`
-	CreatedAt time.Time `json:"created_at"`
+	ID          int64     `json:"id"`
+	Number      string    `json:"number"`
+	Seats       int       `json:"seats"`
+	Status      string    `json:"status"`
+	Slug        string    `json:"slug"`
+	QRToken     string    `json:"qr_token"`
+	QRURL       string    `json:"qr_url"`
+	QRImageData string    `json:"qr_image_data"`
+	Active      bool      `json:"active"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+type TableSession struct {
+	ID           int64      `json:"id"`
+	TableID      int64      `json:"table_id"`
+	TableNumber  string     `json:"table_number,omitempty"`
+	Token        string     `json:"token"`
+	CustomerName string     `json:"customer_name"`
+	Status       string     `json:"status"`
+	StartedAt    time.Time  `json:"started_at"`
+	LastSeenAt   time.Time  `json:"last_seen_at"`
+	EndedAt      *time.Time `json:"ended_at,omitempty"`
+}
+
+type TableContext struct {
+	Table       Table        `json:"table"`
+	Session     TableSession `json:"session"`
+	ActiveOrder *Order       `json:"active_order,omitempty"`
 }
 
 type Category struct {
@@ -53,13 +78,17 @@ type Order struct {
 	ID            int64       `json:"id"`
 	TableID       *int64      `json:"table_id,omitempty"`
 	TableNumber   string      `json:"table_number,omitempty"`
+	SessionID     *int64      `json:"session_id,omitempty"`
 	CustomerName  string      `json:"customer_name"`
 	Status        string      `json:"status"`
+	PaymentStatus string      `json:"payment_status"`
 	SubtotalCents int64       `json:"subtotal_cents"`
 	VATCents      int64       `json:"vat_cents"`
 	TotalCents    int64       `json:"total_cents"`
 	Source        string      `json:"source"`
 	Items         []OrderItem `json:"items,omitempty"`
+	Payments      []Payment   `json:"payments,omitempty"`
+	Receipt       *Receipt    `json:"receipt,omitempty"`
 	CreatedAt     time.Time   `json:"created_at"`
 	UpdatedAt     time.Time   `json:"updated_at"`
 }
@@ -76,13 +105,44 @@ type OrderItem struct {
 }
 
 type Payment struct {
-	ID          int64     `json:"id"`
-	OrderID     int64     `json:"order_id"`
-	Method      string    `json:"method"`
-	AmountCents int64     `json:"amount_cents"`
-	Status      string    `json:"status"`
-	Reference   string    `json:"reference"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID           int64      `json:"id"`
+	OrderID      int64      `json:"order_id"`
+	Method       string     `json:"method"`
+	AmountCents  int64      `json:"amount_cents"`
+	Status       string     `json:"status"`
+	Reference    string     `json:"reference"`
+	PhoneNumber  string     `json:"phone_number"`
+	Provider     string     `json:"provider"`
+	MetadataJSON string     `json:"metadata_json"`
+	ConfirmedAt  *time.Time `json:"confirmed_at,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+}
+
+type Receipt struct {
+	ID            int64     `json:"id"`
+	OrderID       int64     `json:"order_id"`
+	PaymentID     *int64    `json:"payment_id,omitempty"`
+	ReceiptNumber string    `json:"receipt_number"`
+	PayloadJSON   string    `json:"payload_json"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+type PaymentMethodStat struct {
+	Method       string `json:"method"`
+	Count        int64  `json:"count"`
+	RevenueCents int64  `json:"revenue_cents"`
+}
+
+type AnalyticsSnapshot struct {
+	DailySales        []SalesPoint        `json:"daily_sales"`
+	BestSellers       []BestSeller        `json:"best_sellers"`
+	LowStock          []Ingredient        `json:"low_stock"`
+	PaymentMethods    []PaymentMethodStat `json:"payment_methods"`
+	DailyTotalCents   int64               `json:"daily_total_cents"`
+	WeeklyTotalCents  int64               `json:"weekly_total_cents"`
+	MonthlyTotalCents int64               `json:"monthly_total_cents"`
+	OpenOrders        int64               `json:"open_orders"`
+	ActiveSessions    int64               `json:"active_sessions"`
 }
 
 type Ingredient struct {

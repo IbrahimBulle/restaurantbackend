@@ -7,70 +7,163 @@ package database
 
 import (
 	"context"
+	"database/sql"
+	"time"
 )
 
 const createTable = `-- name: CreateTable :one
-INSERT INTO restaurant_tables (number, seats, qr_token) VALUES (?, ?, ?)
-RETURNING id, number, seats, status, qr_token, created_at
+INSERT INTO restaurant_tables (number, seats, qr_token, slug)
+VALUES (?, ?, ?, ?)
+RETURNING id, number, seats, status, COALESCE(slug, ''), qr_token, '', '', COALESCE(active, 1), created_at
 `
 
 type CreateTableParams struct {
-	Number  string `json:"number"`
-	Seats   int64  `json:"seats"`
-	QrToken string `json:"qr_token"`
+	Number  string         `json:"number"`
+	Seats   int64          `json:"seats"`
+	QrToken string         `json:"qr_token"`
+	Slug    sql.NullString `json:"slug"`
 }
 
-func (q *Queries) CreateTable(ctx context.Context, arg CreateTableParams) (RestaurantTable, error) {
-	row := q.db.QueryRowContext(ctx, createTable, arg.Number, arg.Seats, arg.QrToken)
-	var i RestaurantTable
+type CreateTableRow struct {
+	ID        int64     `json:"id"`
+	Number    string    `json:"number"`
+	Seats     int64     `json:"seats"`
+	Status    string    `json:"status"`
+	Slug      string    `json:"slug"`
+	QrToken   string    `json:"qr_token"`
+	Column7   string    `json:"column_7"`
+	Column8   string    `json:"column_8"`
+	Active    int64     `json:"active"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func (q *Queries) CreateTable(ctx context.Context, arg CreateTableParams) (CreateTableRow, error) {
+	row := q.db.QueryRowContext(ctx, createTable,
+		arg.Number,
+		arg.Seats,
+		arg.QrToken,
+		arg.Slug,
+	)
+	var i CreateTableRow
 	err := row.Scan(
 		&i.ID,
 		&i.Number,
 		&i.Seats,
 		&i.Status,
+		&i.Slug,
 		&i.QrToken,
+		&i.Column7,
+		&i.Column8,
+		&i.Active,
 		&i.CreatedAt,
 	)
 	return i, err
 }
 
-const getTableByToken = `-- name: GetTableByToken :one
-SELECT id, number, seats, status, qr_token, created_at FROM restaurant_tables WHERE qr_token = ? LIMIT 1
+const getTableByIdentifier = `-- name: GetTableByIdentifier :one
+SELECT
+  t.id,
+  t.number,
+  t.seats,
+  t.status,
+  COALESCE(t.slug, '') AS slug,
+  t.qr_token,
+  COALESCE(q.public_url, '') AS qr_url,
+  COALESCE(q.image_data, '') AS qr_image_data,
+  COALESCE(t.active, 1) AS active,
+  t.created_at
+FROM restaurant_tables t
+LEFT JOIN qr_codes q ON q.table_id = t.id
+WHERE t.slug = ? OR t.qr_token = ?
+LIMIT 1
 `
 
-func (q *Queries) GetTableByToken(ctx context.Context, qrToken string) (RestaurantTable, error) {
-	row := q.db.QueryRowContext(ctx, getTableByToken, qrToken)
-	var i RestaurantTable
+type GetTableByIdentifierParams struct {
+	Slug    sql.NullString `json:"slug"`
+	QrToken string         `json:"qr_token"`
+}
+
+type GetTableByIdentifierRow struct {
+	ID          int64     `json:"id"`
+	Number      string    `json:"number"`
+	Seats       int64     `json:"seats"`
+	Status      string    `json:"status"`
+	Slug        string    `json:"slug"`
+	QrToken     string    `json:"qr_token"`
+	QrUrl       string    `json:"qr_url"`
+	QrImageData string    `json:"qr_image_data"`
+	Active      int64     `json:"active"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+func (q *Queries) GetTableByIdentifier(ctx context.Context, arg GetTableByIdentifierParams) (GetTableByIdentifierRow, error) {
+	row := q.db.QueryRowContext(ctx, getTableByIdentifier, arg.Slug, arg.QrToken)
+	var i GetTableByIdentifierRow
 	err := row.Scan(
 		&i.ID,
 		&i.Number,
 		&i.Seats,
 		&i.Status,
+		&i.Slug,
 		&i.QrToken,
+		&i.QrUrl,
+		&i.QrImageData,
+		&i.Active,
 		&i.CreatedAt,
 	)
 	return i, err
 }
 
 const listTables = `-- name: ListTables :many
-SELECT id, number, seats, status, qr_token, created_at FROM restaurant_tables ORDER BY CAST(number AS INTEGER), number
+SELECT
+  t.id,
+  t.number,
+  t.seats,
+  t.status,
+  COALESCE(t.slug, '') AS slug,
+  t.qr_token,
+  COALESCE(q.public_url, '') AS qr_url,
+  COALESCE(q.image_data, '') AS qr_image_data,
+  COALESCE(t.active, 1) AS active,
+  t.created_at
+FROM restaurant_tables t
+LEFT JOIN qr_codes q ON q.table_id = t.id
+WHERE COALESCE(t.active, 1) = 1
+ORDER BY CAST(t.number AS INTEGER), t.number
 `
 
-func (q *Queries) ListTables(ctx context.Context) ([]RestaurantTable, error) {
+type ListTablesRow struct {
+	ID          int64     `json:"id"`
+	Number      string    `json:"number"`
+	Seats       int64     `json:"seats"`
+	Status      string    `json:"status"`
+	Slug        string    `json:"slug"`
+	QrToken     string    `json:"qr_token"`
+	QrUrl       string    `json:"qr_url"`
+	QrImageData string    `json:"qr_image_data"`
+	Active      int64     `json:"active"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+func (q *Queries) ListTables(ctx context.Context) ([]ListTablesRow, error) {
 	rows, err := q.db.QueryContext(ctx, listTables)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []RestaurantTable
+	var items []ListTablesRow
 	for rows.Next() {
-		var i RestaurantTable
+		var i ListTablesRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.Number,
 			&i.Seats,
 			&i.Status,
+			&i.Slug,
 			&i.QrToken,
+			&i.QrUrl,
+			&i.QrImageData,
+			&i.Active,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -88,7 +181,7 @@ func (q *Queries) ListTables(ctx context.Context) ([]RestaurantTable, error) {
 
 const updateTableStatus = `-- name: UpdateTableStatus :one
 UPDATE restaurant_tables SET status = ? WHERE id = ?
-RETURNING id, number, seats, status, qr_token, created_at
+RETURNING id, number, seats, status, COALESCE(slug, ''), qr_token, '', '', COALESCE(active, 1), created_at
 `
 
 type UpdateTableStatusParams struct {
@@ -96,16 +189,56 @@ type UpdateTableStatusParams struct {
 	ID     int64  `json:"id"`
 }
 
-func (q *Queries) UpdateTableStatus(ctx context.Context, arg UpdateTableStatusParams) (RestaurantTable, error) {
+type UpdateTableStatusRow struct {
+	ID        int64     `json:"id"`
+	Number    string    `json:"number"`
+	Seats     int64     `json:"seats"`
+	Status    string    `json:"status"`
+	Slug      string    `json:"slug"`
+	QrToken   string    `json:"qr_token"`
+	Column7   string    `json:"column_7"`
+	Column8   string    `json:"column_8"`
+	Active    int64     `json:"active"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func (q *Queries) UpdateTableStatus(ctx context.Context, arg UpdateTableStatusParams) (UpdateTableStatusRow, error) {
 	row := q.db.QueryRowContext(ctx, updateTableStatus, arg.Status, arg.ID)
-	var i RestaurantTable
+	var i UpdateTableStatusRow
 	err := row.Scan(
 		&i.ID,
 		&i.Number,
 		&i.Seats,
 		&i.Status,
+		&i.Slug,
 		&i.QrToken,
+		&i.Column7,
+		&i.Column8,
+		&i.Active,
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const upsertQRCode = `-- name: UpsertQRCode :exec
+INSERT INTO qr_codes (table_id, public_url, image_data)
+VALUES (?, ?, ?)
+ON CONFLICT(table_id) DO UPDATE SET
+  public_url = excluded.public_url,
+  image_data = CASE
+    WHEN excluded.image_data = '' THEN qr_codes.image_data
+    ELSE excluded.image_data
+  END,
+  updated_at = CURRENT_TIMESTAMP
+`
+
+type UpsertQRCodeParams struct {
+	TableID   int64  `json:"table_id"`
+	PublicUrl string `json:"public_url"`
+	ImageData string `json:"image_data"`
+}
+
+func (q *Queries) UpsertQRCode(ctx context.Context, arg UpsertQRCodeParams) error {
+	_, err := q.db.ExecContext(ctx, upsertQRCode, arg.TableID, arg.PublicUrl, arg.ImageData)
+	return err
 }

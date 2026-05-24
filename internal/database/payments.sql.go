@@ -7,31 +7,43 @@ package database
 
 import (
 	"context"
+	"database/sql"
+	"time"
 )
 
-const createPayment = `-- name: CreatePayment :one
-INSERT INTO payments (order_id, method, amount_cents, status, reference)
-VALUES (?, ?, ?, ?, ?)
-RETURNING id, order_id, method, amount_cents, status, reference, created_at
+const confirmPayment = `-- name: ConfirmPayment :one
+UPDATE payments
+SET
+  status = 'paid',
+  reference = CASE WHEN ? = '' THEN reference ELSE ? END,
+  confirmed_at = CURRENT_TIMESTAMP
+WHERE id = ?
+RETURNING id, order_id, method, amount_cents, status, reference, phone_number, provider, metadata_json, confirmed_at, created_at
 `
 
-type CreatePaymentParams struct {
-	OrderID     int64  `json:"order_id"`
-	Method      string `json:"method"`
-	AmountCents int64  `json:"amount_cents"`
-	Status      string `json:"status"`
-	Reference   string `json:"reference"`
+type ConfirmPaymentParams struct {
+	Column1   interface{} `json:"column_1"`
+	Reference string      `json:"reference"`
+	ID        int64       `json:"id"`
 }
 
-func (q *Queries) CreatePayment(ctx context.Context, arg CreatePaymentParams) (Payment, error) {
-	row := q.db.QueryRowContext(ctx, createPayment,
-		arg.OrderID,
-		arg.Method,
-		arg.AmountCents,
-		arg.Status,
-		arg.Reference,
-	)
-	var i Payment
+type ConfirmPaymentRow struct {
+	ID           int64        `json:"id"`
+	OrderID      int64        `json:"order_id"`
+	Method       string       `json:"method"`
+	AmountCents  int64        `json:"amount_cents"`
+	Status       string       `json:"status"`
+	Reference    string       `json:"reference"`
+	PhoneNumber  string       `json:"phone_number"`
+	Provider     string       `json:"provider"`
+	MetadataJson string       `json:"metadata_json"`
+	ConfirmedAt  sql.NullTime `json:"confirmed_at"`
+	CreatedAt    time.Time    `json:"created_at"`
+}
+
+func (q *Queries) ConfirmPayment(ctx context.Context, arg ConfirmPaymentParams) (ConfirmPaymentRow, error) {
+	row := q.db.QueryRowContext(ctx, confirmPayment, arg.Column1, arg.Reference, arg.ID)
+	var i ConfirmPaymentRow
 	err := row.Scan(
 		&i.ID,
 		&i.OrderID,
@@ -39,24 +51,117 @@ func (q *Queries) CreatePayment(ctx context.Context, arg CreatePaymentParams) (P
 		&i.AmountCents,
 		&i.Status,
 		&i.Reference,
+		&i.PhoneNumber,
+		&i.Provider,
+		&i.MetadataJson,
+		&i.ConfirmedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const createPayment = `-- name: CreatePayment :one
+INSERT INTO payments (order_id, method, amount_cents, status, reference, phone_number, provider, metadata_json, confirmed_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? = 'paid' THEN CURRENT_TIMESTAMP ELSE NULL END)
+RETURNING id, order_id, method, amount_cents, status, reference, phone_number, provider, metadata_json, confirmed_at, created_at
+`
+
+type CreatePaymentParams struct {
+	OrderID      int64       `json:"order_id"`
+	Method       string      `json:"method"`
+	AmountCents  int64       `json:"amount_cents"`
+	Status       string      `json:"status"`
+	Reference    string      `json:"reference"`
+	PhoneNumber  string      `json:"phone_number"`
+	Provider     string      `json:"provider"`
+	MetadataJson string      `json:"metadata_json"`
+	Column9      interface{} `json:"column_9"`
+}
+
+type CreatePaymentRow struct {
+	ID           int64        `json:"id"`
+	OrderID      int64        `json:"order_id"`
+	Method       string       `json:"method"`
+	AmountCents  int64        `json:"amount_cents"`
+	Status       string       `json:"status"`
+	Reference    string       `json:"reference"`
+	PhoneNumber  string       `json:"phone_number"`
+	Provider     string       `json:"provider"`
+	MetadataJson string       `json:"metadata_json"`
+	ConfirmedAt  sql.NullTime `json:"confirmed_at"`
+	CreatedAt    time.Time    `json:"created_at"`
+}
+
+func (q *Queries) CreatePayment(ctx context.Context, arg CreatePaymentParams) (CreatePaymentRow, error) {
+	row := q.db.QueryRowContext(ctx, createPayment,
+		arg.OrderID,
+		arg.Method,
+		arg.AmountCents,
+		arg.Status,
+		arg.Reference,
+		arg.PhoneNumber,
+		arg.Provider,
+		arg.MetadataJson,
+		arg.Column9,
+	)
+	var i CreatePaymentRow
+	err := row.Scan(
+		&i.ID,
+		&i.OrderID,
+		&i.Method,
+		&i.AmountCents,
+		&i.Status,
+		&i.Reference,
+		&i.PhoneNumber,
+		&i.Provider,
+		&i.MetadataJson,
+		&i.ConfirmedAt,
 		&i.CreatedAt,
 	)
 	return i, err
 }
 
 const listPayments = `-- name: ListPayments :many
-SELECT id, order_id, method, amount_cents, status, reference, created_at FROM payments ORDER BY created_at DESC LIMIT ?
+SELECT
+  id,
+  order_id,
+  method,
+  amount_cents,
+  status,
+  reference,
+  phone_number,
+  provider,
+  metadata_json,
+  confirmed_at,
+  created_at
+FROM payments
+ORDER BY created_at DESC
+LIMIT ?
 `
 
-func (q *Queries) ListPayments(ctx context.Context, limit int64) ([]Payment, error) {
+type ListPaymentsRow struct {
+	ID           int64        `json:"id"`
+	OrderID      int64        `json:"order_id"`
+	Method       string       `json:"method"`
+	AmountCents  int64        `json:"amount_cents"`
+	Status       string       `json:"status"`
+	Reference    string       `json:"reference"`
+	PhoneNumber  string       `json:"phone_number"`
+	Provider     string       `json:"provider"`
+	MetadataJson string       `json:"metadata_json"`
+	ConfirmedAt  sql.NullTime `json:"confirmed_at"`
+	CreatedAt    time.Time    `json:"created_at"`
+}
+
+func (q *Queries) ListPayments(ctx context.Context, limit int64) ([]ListPaymentsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listPayments, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Payment
+	var items []ListPaymentsRow
 	for rows.Next() {
-		var i Payment
+		var i ListPaymentsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.OrderID,
@@ -64,6 +169,10 @@ func (q *Queries) ListPayments(ctx context.Context, limit int64) ([]Payment, err
 			&i.AmountCents,
 			&i.Status,
 			&i.Reference,
+			&i.PhoneNumber,
+			&i.Provider,
+			&i.MetadataJson,
+			&i.ConfirmedAt,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err

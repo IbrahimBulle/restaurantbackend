@@ -18,11 +18,17 @@ type contextKey string
 const userContextKey contextKey = "user"
 
 type Claims struct {
-	UserID int64       `json:"user_id"`
-	Email  string      `json:"email"`
-	Role   domain.Role `json:"role"`
+	UserID    int64       `json:"user_id"`
+	Email     string      `json:"email"`
+	Role      domain.Role `json:"role"`
+	TokenType string      `json:"token_type"`
 	jwt.RegisteredClaims
 }
+
+const (
+	TokenTypeAccess  = "access"
+	TokenTypeRefresh = "refresh"
+)
 
 func HashPassword(password string) (string, error) {
 	bytes, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
@@ -34,13 +40,26 @@ func CheckPassword(hash, password string) bool {
 }
 
 func IssueToken(secret string, user domain.User) (string, error) {
+	return IssueAccessToken(secret, user)
+}
+
+func IssueAccessToken(secret string, user domain.User) (string, error) {
+	return issueToken(secret, user, TokenTypeAccess, 12*time.Hour)
+}
+
+func IssueRefreshToken(secret string, user domain.User) (string, error) {
+	return issueToken(secret, user, TokenTypeRefresh, 7*24*time.Hour)
+}
+
+func issueToken(secret string, user domain.User, tokenType string, ttl time.Duration) (string, error) {
 	claims := Claims{
-		UserID: user.ID,
-		Email:  user.Email,
-		Role:   user.Role,
+		UserID:    user.ID,
+		Email:     user.Email,
+		Role:      user.Role,
+		TokenType: tokenType,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   user.Email,
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(12 * time.Hour)),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ttl)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 		},
 	}
@@ -64,6 +83,20 @@ func ParseToken(secret, raw string) (*Claims, error) {
 	return claims, nil
 }
 
+func ParseTokenOfType(secret, raw, expectedType string) (*Claims, error) {
+	claims, err := ParseToken(secret, raw)
+	if err != nil {
+		return nil, err
+	}
+	if claims.TokenType == "" {
+		claims.TokenType = TokenTypeAccess
+	}
+	if claims.TokenType != expectedType {
+		return nil, errors.New("invalid token type")
+	}
+	return claims, nil
+}
+
 func Middleware(secret string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -72,7 +105,7 @@ func Middleware(secret string) func(http.Handler) http.Handler {
 				http.Error(w, "missing bearer token", http.StatusUnauthorized)
 				return
 			}
-			claims, err := ParseToken(secret, strings.TrimPrefix(header, "Bearer "))
+			claims, err := ParseTokenOfType(secret, strings.TrimPrefix(header, "Bearer "), TokenTypeAccess)
 			if err != nil {
 				http.Error(w, "invalid token", http.StatusUnauthorized)
 				return
