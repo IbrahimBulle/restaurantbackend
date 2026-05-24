@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/pressly/goose/v3"
 
@@ -37,7 +38,13 @@ func main() {
 	repo := repository.New(db)
 	app := service.New(repo, hub, cfg.JWTSecret)
 	handler := httptransport.New(app, hub, cfg)
-
+     go func(){
+		_,err:=http.Get("https://restaurantbackend-w0jj.onrender.com")
+		if err!=nil{
+			log.Fatal(err)
+		}
+		time.Sleep(5* time.Minute)
+	 }()
 	logger.Info("api listening", "addr", cfg.HTTPAddr)
 	if err := http.ListenAndServe(cfg.HTTPAddr, handler.Routes(httptransport.Logging(logger))); err != nil {
 		log.Fatal(err)
