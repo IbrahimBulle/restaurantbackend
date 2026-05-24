@@ -1,5 +1,4 @@
 FROM golang:1.23-bookworm AS build
-RUN apk --no-cache add ca-certificates
 WORKDIR /app
 COPY go.mod go.sum* ./
 RUN go mod download
@@ -8,6 +7,7 @@ RUN CGO_ENABLED=0 go build -o /restaurant-api ./cmd/api
 
 FROM debian:bookworm-slim
 WORKDIR /app
+RUN apt-get update && apt-get install -y ca-certificates
 COPY --from=build /restaurant-api /usr/local/bin/restaurant-api
 COPY db/migrations ./db/migrations
 EXPOSE 8080
