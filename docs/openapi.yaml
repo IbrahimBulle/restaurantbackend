@@ -1,0 +1,66 @@
+openapi: 3.0.3
+info:
+  title: QRDine API
+  version: 0.1.0
+servers:
+  - url: http://localhost:8080
+paths:
+  /health:
+    get:
+      responses:
+        "200": { description: OK }
+  /api/auth/login:
+    post:
+      summary: Login with staff credentials and receive a JWT
+      responses:
+        "200": { description: Authenticated }
+  /api/public/menu:
+    get:
+      summary: Public customer menu
+      responses:
+        "200": { description: Menu categories and items }
+  /api/public/tables/{token}:
+    get:
+      summary: Resolve a QR table token
+      parameters:
+        - in: path
+          name: token
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Table }
+  /api/public/orders:
+    post:
+      summary: Place a QR or manual order
+      responses:
+        "201": { description: Order created }
+  /api/orders:
+    get:
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Orders }
+  /api/orders/{id}/status:
+    patch:
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Order status updated }
+  /api/tables:
+    get:
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Tables with QR URLs }
+    post:
+      security: [{ bearerAuth: [] }]
+      responses:
+        "201": { description: Table created }
+  /api/reports/summary:
+    get:
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Sales, best sellers, and low stock }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
