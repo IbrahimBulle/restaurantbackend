@@ -291,13 +291,13 @@ func (r *Repository) ListMenuAdmin(ctx context.Context) ([]domain.Category, []do
 
 func (r *Repository) listMenu(ctx context.Context, activeOnly bool) ([]domain.Category, []domain.MenuItem, error) {
 	categoryQuery := `SELECT id, name, sort_order, active FROM menu_categories`
-	itemQuery := `SELECT id, category_id, name, description, price_cents, image_url, active, created_at FROM menu_items`
+	itemQuery := `SELECT id, category_id, name, description, price_cents, image_url, COALESCE(sku, ''), COALESCE(item_type, 'food'), COALESCE(cost_cents, 0), COALESCE(sort_order, 0), active, created_at FROM menu_items`
 	if activeOnly {
 		categoryQuery += ` WHERE active = 1`
 		itemQuery += ` WHERE active = 1`
 	}
 	categoryQuery += ` ORDER BY sort_order, name`
-	itemQuery += ` ORDER BY category_id, name`
+	itemQuery += ` ORDER BY category_id, sort_order, name`
 
 	catRows, err := r.db.QueryContext(ctx, categoryQuery)
 	if err != nil {
@@ -351,7 +351,7 @@ func (r *Repository) CreateCategory(ctx context.Context, name string, sortOrder 
 }
 
 func (r *Repository) GetMenuItem(ctx context.Context, id int64) (domain.MenuItem, error) {
-	row := r.db.QueryRowContext(ctx, `SELECT id, category_id, name, description, price_cents, image_url, active, created_at FROM menu_items WHERE id = ?`, id)
+	row := r.db.QueryRowContext(ctx, `SELECT id, category_id, name, description, price_cents, image_url, COALESCE(sku, ''), COALESCE(item_type, 'food'), COALESCE(cost_cents, 0), COALESCE(sort_order, 0), active, created_at FROM menu_items WHERE id = ?`, id)
 	return scanMenuItem(row)
 }
 
@@ -361,41 +361,120 @@ type SaveMenuItemInput struct {
 	Description string
 	PriceCents  int64
 	ImageURL    string
+	SKU         string
+	ItemType    string
+	CostCents   int64
+	SortOrder   int
+	StockQty    float64
+	ReorderLevel float64
+	Unit        string
+	TrackStock  bool
 	Active      bool
 }
 
 func (r *Repository) CreateMenuItem(ctx context.Context, input SaveMenuItemInput) (domain.MenuItem, error) {
-	row := r.db.QueryRowContext(ctx, `
-		INSERT INTO menu_items (category_id, name, description, price_cents, image_url, active)
-		VALUES (?, ?, ?, ?, ?, ?)
-		RETURNING id, category_id, name, description, price_cents, image_url, active, created_at
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.MenuItem{}, err
+	}
+	defer tx.Rollback()
+
+	row := tx.QueryRowContext(ctx, `
+		INSERT INTO menu_items (category_id, name, description, price_cents, image_url, sku, item_type, cost_cents, sort_order, active)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		RETURNING id, category_id, name, description, price_cents, image_url, COALESCE(sku, ''), COALESCE(item_type, 'food'), COALESCE(cost_cents, 0), COALESCE(sort_order, 0), active, created_at
 	`,
 		input.CategoryID,
 		strings.TrimSpace(input.Name),
 		strings.TrimSpace(input.Description),
 		input.PriceCents,
 		strings.TrimSpace(input.ImageURL),
+		strings.TrimSpace(input.SKU),
+		defaultString(strings.TrimSpace(input.ItemType), "food"),
+		input.CostCents,
+		input.SortOrder,
 		boolToInt(input.Active),
 	)
-	return scanMenuItem(row)
+	item, err := scanMenuItem(row)
+	if err != nil {
+		return domain.MenuItem{}, err
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO inventory (product_id, stock_qty, reorder_level, unit, track_stock, updated_at)
+		VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(product_id) DO UPDATE SET
+			stock_qty = excluded.stock_qty,
+			reorder_level = excluded.reorder_level,
+			unit = excluded.unit,
+			track_stock = excluded.track_stock,
+			updated_at = CURRENT_TIMESTAMP
+	`, item.ID, input.StockQty, input.ReorderLevel, defaultString(strings.TrimSpace(input.Unit), "pcs"), boolToInt(input.TrackStock)); err != nil {
+		return domain.MenuItem{}, err
+	}
+
+	if input.StockQty != 0 {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO inventory_movements (product_id, change_qty, reason, reference)
+			VALUES (?, ?, 'initial_stock', 'product_create')
+		`, item.ID, input.StockQty); err != nil {
+			return domain.MenuItem{}, err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return domain.MenuItem{}, err
+	}
+	return item, nil
 }
 
 func (r *Repository) UpdateMenuItem(ctx context.Context, id int64, input SaveMenuItemInput) (domain.MenuItem, error) {
-	row := r.db.QueryRowContext(ctx, `
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.MenuItem{}, err
+	}
+	defer tx.Rollback()
+
+	row := tx.QueryRowContext(ctx, `
 		UPDATE menu_items
-		SET category_id = ?, name = ?, description = ?, price_cents = ?, image_url = ?, active = ?
+		SET category_id = ?, name = ?, description = ?, price_cents = ?, image_url = ?, sku = ?, item_type = ?, cost_cents = ?, sort_order = ?, active = ?
 		WHERE id = ?
-		RETURNING id, category_id, name, description, price_cents, image_url, active, created_at
+		RETURNING id, category_id, name, description, price_cents, image_url, COALESCE(sku, ''), COALESCE(item_type, 'food'), COALESCE(cost_cents, 0), COALESCE(sort_order, 0), active, created_at
 	`,
 		input.CategoryID,
 		strings.TrimSpace(input.Name),
 		strings.TrimSpace(input.Description),
 		input.PriceCents,
 		strings.TrimSpace(input.ImageURL),
+		strings.TrimSpace(input.SKU),
+		defaultString(strings.TrimSpace(input.ItemType), "food"),
+		input.CostCents,
+		input.SortOrder,
 		boolToInt(input.Active),
 		id,
 	)
-	return scanMenuItem(row)
+	item, err := scanMenuItem(row)
+	if err != nil {
+		return domain.MenuItem{}, err
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO inventory (product_id, stock_qty, reorder_level, unit, track_stock, updated_at)
+		VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(product_id) DO UPDATE SET
+			stock_qty = excluded.stock_qty,
+			reorder_level = excluded.reorder_level,
+			unit = excluded.unit,
+			track_stock = excluded.track_stock,
+			updated_at = CURRENT_TIMESTAMP
+	`, id, input.StockQty, input.ReorderLevel, defaultString(strings.TrimSpace(input.Unit), "pcs"), boolToInt(input.TrackStock)); err != nil {
+		return domain.MenuItem{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return domain.MenuItem{}, err
+	}
+	return item, nil
 }
 
 type CreateOrderInput struct {
@@ -496,6 +575,22 @@ func (r *Repository) CreateOrder(ctx context.Context, input CreateOrderInput) (d
 				SELECT ingredient_id FROM menu_item_ingredients WHERE menu_item_id = ?
 			)
 		`, item.input.Quantity, item.menu.ID, item.menu.ID); err != nil {
+			return domain.Order{}, err
+		}
+
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE inventory
+			SET stock_qty = stock_qty - ?, updated_at = CURRENT_TIMESTAMP
+			WHERE product_id = ? AND track_stock = 1
+		`, item.input.Quantity, item.menu.ID); err != nil {
+			return domain.Order{}, err
+		}
+
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO inventory_movements (product_id, change_qty, reason, reference)
+			SELECT ?, ?, 'sale', 'order-' || ?
+			WHERE EXISTS (SELECT 1 FROM inventory WHERE product_id = ? AND track_stock = 1)
+		`, item.menu.ID, -float64(item.input.Quantity), order.ID, item.menu.ID); err != nil {
 			return domain.Order{}, err
 		}
 	}
@@ -878,6 +973,316 @@ func (r *Repository) Analytics(ctx context.Context) (domain.AnalyticsSnapshot, e
 	return snapshot, nil
 }
 
+func (r *Repository) ListProducts(ctx context.Context) ([]domain.Product, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT
+			mi.id,
+			mi.category_id,
+			COALESCE(mc.name, ''),
+			mi.name,
+			mi.description,
+			mi.price_cents,
+			COALESCE(mi.cost_cents, 0),
+			mi.image_url,
+			COALESCE(mi.sku, ''),
+			COALESCE(mi.item_type, 'food'),
+			COALESCE(mi.sort_order, 0),
+			mi.active,
+			COALESCE(inv.stock_qty, 0),
+			COALESCE(inv.reorder_level, 0),
+			COALESCE(inv.unit, 'pcs'),
+			COALESCE(inv.track_stock, 1),
+			mi.created_at
+		FROM menu_items mi
+		LEFT JOIN menu_categories mc ON mc.id = mi.category_id
+		LEFT JOIN inventory inv ON inv.product_id = mi.id
+		ORDER BY mi.active DESC, mc.sort_order ASC, mi.sort_order ASC, mi.name ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	products := []domain.Product{}
+	for rows.Next() {
+		product, err := scanProduct(rows)
+		if err != nil {
+			return nil, err
+		}
+		products = append(products, product)
+	}
+	return products, rows.Err()
+}
+
+func (r *Repository) GetProduct(ctx context.Context, id int64) (domain.Product, error) {
+	row := r.db.QueryRowContext(ctx, `
+		SELECT
+			mi.id,
+			mi.category_id,
+			COALESCE(mc.name, ''),
+			mi.name,
+			mi.description,
+			mi.price_cents,
+			COALESCE(mi.cost_cents, 0),
+			mi.image_url,
+			COALESCE(mi.sku, ''),
+			COALESCE(mi.item_type, 'food'),
+			COALESCE(mi.sort_order, 0),
+			mi.active,
+			COALESCE(inv.stock_qty, 0),
+			COALESCE(inv.reorder_level, 0),
+			COALESCE(inv.unit, 'pcs'),
+			COALESCE(inv.track_stock, 1),
+			mi.created_at
+		FROM menu_items mi
+		LEFT JOIN menu_categories mc ON mc.id = mi.category_id
+		LEFT JOIN inventory inv ON inv.product_id = mi.id
+		WHERE mi.id = ?
+		LIMIT 1
+	`, id)
+	return scanProduct(row)
+}
+
+func (r *Repository) ArchiveProduct(ctx context.Context, id int64) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE menu_items SET active = 0 WHERE id = ?`, id)
+	return err
+}
+
+func (r *Repository) AdjustInventory(ctx context.Context, input domain.InventoryAdjustment) (domain.Product, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Product{}, err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO inventory (product_id, stock_qty, reorder_level, unit, track_stock, updated_at)
+		VALUES (?, ?, 0, 'pcs', 1, CURRENT_TIMESTAMP)
+		ON CONFLICT(product_id) DO NOTHING
+	`, input.ProductID, 0); err != nil {
+		return domain.Product{}, err
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE inventory
+		SET stock_qty = stock_qty + ?, updated_at = CURRENT_TIMESTAMP
+		WHERE product_id = ?
+	`, input.ChangeQty, input.ProductID); err != nil {
+		return domain.Product{}, err
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO inventory_movements (product_id, change_qty, reason, reference)
+		VALUES (?, ?, ?, ?)
+	`, input.ProductID, input.ChangeQty, defaultString(strings.TrimSpace(input.Reason), "manual_adjustment"), strings.TrimSpace(input.Reference)); err != nil {
+		return domain.Product{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return domain.Product{}, err
+	}
+
+	return r.GetProduct(ctx, input.ProductID)
+}
+
+func (r *Repository) ListInventoryMovements(ctx context.Context, limit int) ([]domain.InventoryMovement, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT
+			im.id,
+			im.product_id,
+			COALESCE(mi.name, ''),
+			im.change_qty,
+			im.reason,
+			im.reference,
+			im.created_at
+		FROM inventory_movements im
+		JOIN menu_items mi ON mi.id = im.product_id
+		ORDER BY im.created_at DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	movements := []domain.InventoryMovement{}
+	for rows.Next() {
+		var movement domain.InventoryMovement
+		if err := rows.Scan(&movement.ID, &movement.ProductID, &movement.ProductName, &movement.ChangeQty, &movement.Reason, &movement.Reference, &movement.CreatedAt); err != nil {
+			return nil, err
+		}
+		movements = append(movements, movement)
+	}
+	return movements, rows.Err()
+}
+
+func (r *Repository) GetSettings(ctx context.Context) (domain.Settings, error) {
+	row := r.db.QueryRowContext(ctx, `
+		SELECT id, business_name, business_type, phone, currency_code, mpesa_till, receipt_footer, created_at, updated_at
+		FROM settings
+		WHERE id = 1
+		LIMIT 1
+	`)
+	var settings domain.Settings
+	err := row.Scan(&settings.ID, &settings.BusinessName, &settings.BusinessType, &settings.Phone, &settings.CurrencyCode, &settings.MPesaTill, &settings.ReceiptFooter, &settings.CreatedAt, &settings.UpdatedAt)
+	return settings, err
+}
+
+func (r *Repository) SaveSettings(ctx context.Context, input domain.Settings) (domain.Settings, error) {
+	row := r.db.QueryRowContext(ctx, `
+		INSERT INTO settings (id, business_name, business_type, phone, currency_code, mpesa_till, receipt_footer, created_at, updated_at)
+		VALUES (1, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+		ON CONFLICT(id) DO UPDATE SET
+			business_name = excluded.business_name,
+			business_type = excluded.business_type,
+			phone = excluded.phone,
+			currency_code = excluded.currency_code,
+			mpesa_till = excluded.mpesa_till,
+			receipt_footer = excluded.receipt_footer,
+			updated_at = CURRENT_TIMESTAMP
+		RETURNING id, business_name, business_type, phone, currency_code, mpesa_till, receipt_footer, created_at, updated_at
+	`, strings.TrimSpace(input.BusinessName), strings.TrimSpace(input.BusinessType), strings.TrimSpace(input.Phone), defaultString(strings.TrimSpace(input.CurrencyCode), "KES"), strings.TrimSpace(input.MPesaTill), strings.TrimSpace(input.ReceiptFooter))
+
+	var settings domain.Settings
+	err := row.Scan(&settings.ID, &settings.BusinessName, &settings.BusinessType, &settings.Phone, &settings.CurrencyCode, &settings.MPesaTill, &settings.ReceiptFooter, &settings.CreatedAt, &settings.UpdatedAt)
+	return settings, err
+}
+
+func (r *Repository) ListRecentPayments(ctx context.Context, limit int) ([]domain.Payment, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, order_id, method, amount_cents, status, reference, phone_number, provider, metadata_json, confirmed_at, created_at
+		FROM payments
+		ORDER BY created_at DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	payments := []domain.Payment{}
+	for rows.Next() {
+		payment, err := scanPayment(rows)
+		if err != nil {
+			return nil, err
+		}
+		payments = append(payments, payment)
+	}
+	return payments, rows.Err()
+}
+
+func (r *Repository) DashboardSnapshot(ctx context.Context) (domain.DashboardSnapshot, error) {
+	var snapshot domain.DashboardSnapshot
+
+	settings, err := r.GetSettings(ctx)
+	if err != nil {
+		return snapshot, err
+	}
+	snapshot.Business = settings
+
+	row := r.db.QueryRowContext(ctx, `
+		SELECT
+			COALESCE(SUM(CASE WHEN date(p.created_at) = date('now', 'localtime') AND p.status = 'paid' THEN p.amount_cents END), 0),
+			COALESCE(SUM(CASE WHEN date(p.created_at) >= date('now', '-6 day', 'localtime') AND p.status = 'paid' THEN p.amount_cents END), 0),
+			COALESCE(SUM(CASE WHEN strftime('%Y-%m', p.created_at) = strftime('%Y-%m', 'now', 'localtime') AND p.status = 'paid' THEN p.amount_cents END), 0),
+			COALESCE(SUM(CASE WHEN date(o.created_at) = date('now', 'localtime') AND p.status = 'paid' THEN (oi.unit_price_cents - COALESCE(mi.cost_cents, 0)) * oi.quantity END), 0),
+			COALESCE(SUM(CASE WHEN date(o.created_at) >= date('now', '-6 day', 'localtime') AND p.status = 'paid' THEN (oi.unit_price_cents - COALESCE(mi.cost_cents, 0)) * oi.quantity END), 0),
+			COALESCE(SUM(CASE WHEN strftime('%Y-%m', o.created_at) = strftime('%Y-%m', 'now', 'localtime') AND p.status = 'paid' THEN (oi.unit_price_cents - COALESCE(mi.cost_cents, 0)) * oi.quantity END), 0)
+		FROM payments p
+		LEFT JOIN orders o ON o.id = p.order_id
+		LEFT JOIN order_items oi ON oi.order_id = o.id
+		LEFT JOIN menu_items mi ON mi.id = oi.menu_item_id
+	`)
+	if err := row.Scan(
+		&snapshot.DailyRevenueCents,
+		&snapshot.WeeklyRevenueCents,
+		&snapshot.MonthlyRevenueCents,
+		&snapshot.DailyProfitCents,
+		&snapshot.WeeklyProfitCents,
+		&snapshot.MonthlyProfitCents,
+	); err != nil {
+		return snapshot, err
+	}
+
+	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM orders WHERE status NOT IN ('paid', 'cancelled')`).Scan(&snapshot.OpenOrders); err != nil {
+		return snapshot, err
+	}
+	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM orders WHERE date(updated_at) = date('now', 'localtime') AND payment_status = 'paid'`).Scan(&snapshot.PaidOrdersToday); err != nil {
+		return snapshot, err
+	}
+	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM menu_items WHERE active = 1`).Scan(&snapshot.ProductsCount); err != nil {
+		return snapshot, err
+	}
+	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM restaurant_tables WHERE status = 'occupied'`).Scan(&snapshot.ActiveOrderPoints); err != nil {
+		return snapshot, err
+	}
+
+	analytics, err := r.Analytics(ctx)
+	if err != nil {
+		return snapshot, err
+	}
+	snapshot.BestSellers = analytics.BestSellers
+	snapshot.SalesTrend = analytics.DailySales
+	snapshot.PaymentMethods = analytics.PaymentMethods
+
+	recentOrders, err := r.ListOrders(ctx, 8)
+	if err != nil {
+		return snapshot, err
+	}
+	snapshot.RecentOrders = recentOrders
+
+	recentPayments, err := r.ListRecentPayments(ctx, 8)
+	if err != nil {
+		return snapshot, err
+	}
+	snapshot.RecentPayments = recentPayments
+
+	lowStockRows, err := r.db.QueryContext(ctx, `
+		SELECT
+			mi.id,
+			mi.category_id,
+			COALESCE(mc.name, ''),
+			mi.name,
+			mi.description,
+			mi.price_cents,
+			COALESCE(mi.cost_cents, 0),
+			mi.image_url,
+			COALESCE(mi.sku, ''),
+			COALESCE(mi.item_type, 'food'),
+			COALESCE(mi.sort_order, 0),
+			mi.active,
+			COALESCE(inv.stock_qty, 0),
+			COALESCE(inv.reorder_level, 0),
+			COALESCE(inv.unit, 'pcs'),
+			COALESCE(inv.track_stock, 1),
+			mi.created_at
+		FROM menu_items mi
+		JOIN inventory inv ON inv.product_id = mi.id
+		LEFT JOIN menu_categories mc ON mc.id = mi.category_id
+		WHERE mi.active = 1 AND inv.track_stock = 1 AND inv.stock_qty <= inv.reorder_level
+		ORDER BY inv.stock_qty ASC, mi.name ASC
+		LIMIT 8
+	`)
+	if err != nil {
+		return snapshot, err
+	}
+	defer lowStockRows.Close()
+	snapshot.LowStockProducts = []domain.Product{}
+	for lowStockRows.Next() {
+		product, err := scanProduct(lowStockRows)
+		if err != nil {
+			return snapshot, err
+		}
+		snapshot.LowStockProducts = append(snapshot.LowStockProducts, product)
+	}
+	return snapshot, lowStockRows.Err()
+}
+
 func (r *Repository) hydrateOrder(ctx context.Context, order *domain.Order) error {
 	items, err := r.ListOrderItems(ctx, order.ID)
 	if err != nil {
@@ -900,9 +1305,51 @@ func (r *Repository) hydrateOrder(ctx context.Context, order *domain.Order) erro
 func scanMenuItem(row interface{ Scan(dest ...any) error }) (domain.MenuItem, error) {
 	var item domain.MenuItem
 	var active int
-	err := row.Scan(&item.ID, &item.CategoryID, &item.Name, &item.Description, &item.PriceCents, &item.ImageURL, &active, &item.CreatedAt)
+	err := row.Scan(
+		&item.ID,
+		&item.CategoryID,
+		&item.Name,
+		&item.Description,
+		&item.PriceCents,
+		&item.ImageURL,
+		&item.SKU,
+		&item.ItemType,
+		&item.CostCents,
+		&item.SortOrder,
+		&active,
+		&item.CreatedAt,
+	)
 	item.Active = active == 1
 	return item, err
+}
+
+func scanProduct(row interface{ Scan(dest ...any) error }) (domain.Product, error) {
+	var product domain.Product
+	var active int
+	var trackStock int
+	err := row.Scan(
+		&product.ID,
+		&product.CategoryID,
+		&product.CategoryName,
+		&product.Name,
+		&product.Description,
+		&product.PriceCents,
+		&product.CostCents,
+		&product.ImageURL,
+		&product.SKU,
+		&product.ItemType,
+		&product.SortOrder,
+		&active,
+		&product.StockQty,
+		&product.ReorderLevel,
+		&product.Unit,
+		&trackStock,
+		&product.CreatedAt,
+	)
+	product.Active = active == 1
+	product.TrackStock = trackStock == 1
+	product.OutOfStock = product.TrackStock && product.StockQty <= 0
+	return product, err
 }
 
 func scanTable(row interface{ Scan(dest ...any) error }) (domain.Table, error) {
@@ -984,6 +1431,13 @@ func boolToInt(value bool) int {
 	return 0
 }
 
+func defaultString(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
+}
+
 func nullableInt64(value sql.NullInt64) any {
 	if value.Valid {
 		return value.Int64
@@ -999,7 +1453,7 @@ func nullablePtrInt64(value *int64) any {
 }
 
 func (r *Repository) getMenuItemTx(ctx context.Context, tx *sql.Tx, id int64) (domain.MenuItem, error) {
-	row := tx.QueryRowContext(ctx, `SELECT id, category_id, name, description, price_cents, image_url, active, created_at FROM menu_items WHERE id = ? AND active = 1`, id)
+	row := tx.QueryRowContext(ctx, `SELECT id, category_id, name, description, price_cents, image_url, COALESCE(sku, ''), COALESCE(item_type, 'food'), COALESCE(cost_cents, 0), COALESCE(sort_order, 0), active, created_at FROM menu_items WHERE id = ? AND active = 1`, id)
 	return scanMenuItem(row)
 }
 

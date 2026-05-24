@@ -24,7 +24,7 @@ func Load() Config {
 		DatabaseURL:      get("DATABASE_URL", "file:restaurant.db?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_busy_timeout=5000"),
 		JWTSecret:        get("JWT_SECRET", "dev-secret-change-me"),
 		CORSOrigin:       get("CORS_ORIGIN", "*"),
-		FrontendURL:      get("FRONTEND_BASE_URL", "https://qrdinehotel.netlify.app/"),
+		FrontendURL:      get("FRONTEND_BASE_URL", "http://localhost:5173"),
 		MPesaShortCode:   get("MPESA_SHORT_CODE", "174379"),
 		MPesaCallbackURL: get("MPESA_CALLBACK_URL", ""),
 		MPesaAutoApprove: getBool("MPESA_AUTO_APPROVE", true),

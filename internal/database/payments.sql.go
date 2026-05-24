@@ -121,6 +121,73 @@ func (q *Queries) CreatePayment(ctx context.Context, arg CreatePaymentParams) (C
 	return i, err
 }
 
+const getPaymentsForOrder = `-- name: GetPaymentsForOrder :many
+SELECT
+  id,
+  order_id,
+  method,
+  amount_cents,
+  status,
+  reference,
+  phone_number,
+  provider,
+  metadata_json,
+  confirmed_at,
+  created_at
+FROM payments
+WHERE order_id = ?
+ORDER BY created_at DESC
+`
+
+type GetPaymentsForOrderRow struct {
+	ID           int64        `json:"id"`
+	OrderID      int64        `json:"order_id"`
+	Method       string       `json:"method"`
+	AmountCents  int64        `json:"amount_cents"`
+	Status       string       `json:"status"`
+	Reference    string       `json:"reference"`
+	PhoneNumber  string       `json:"phone_number"`
+	Provider     string       `json:"provider"`
+	MetadataJson string       `json:"metadata_json"`
+	ConfirmedAt  sql.NullTime `json:"confirmed_at"`
+	CreatedAt    time.Time    `json:"created_at"`
+}
+
+func (q *Queries) GetPaymentsForOrder(ctx context.Context, orderID int64) ([]GetPaymentsForOrderRow, error) {
+	rows, err := q.db.QueryContext(ctx, getPaymentsForOrder, orderID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetPaymentsForOrderRow
+	for rows.Next() {
+		var i GetPaymentsForOrderRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.OrderID,
+			&i.Method,
+			&i.AmountCents,
+			&i.Status,
+			&i.Reference,
+			&i.PhoneNumber,
+			&i.Provider,
+			&i.MetadataJson,
+			&i.ConfirmedAt,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPayments = `-- name: ListPayments :many
 SELECT
   id,

@@ -28,3 +28,20 @@ SET
   confirmed_at = CURRENT_TIMESTAMP
 WHERE id = ?
 RETURNING id, order_id, method, amount_cents, status, reference, phone_number, provider, metadata_json, confirmed_at, created_at;
+
+-- name: GetPaymentsForOrder :many
+SELECT
+  id,
+  order_id,
+  method,
+  amount_cents,
+  status,
+  reference,
+  phone_number,
+  provider,
+  metadata_json,
+  confirmed_at,
+  created_at
+FROM payments
+WHERE order_id = ?
+ORDER BY created_at DESC;

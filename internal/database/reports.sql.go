@@ -8,6 +8,7 @@ package database
 import (
 	"context"
 	"database/sql"
+	"time"
 )
 
 const activeSessionCount = `-- name: ActiveSessionCount :one
@@ -62,7 +63,7 @@ func (q *Queries) BestSellingItems(ctx context.Context, limit int64) ([]BestSell
 const dailySales = `-- name: DailySales :many
 SELECT date(created_at) AS day, COUNT(*) AS order_count, SUM(total_cents) AS revenue_cents
 FROM orders
-WHERE status IN ('paid','served','ready') OR payment_status = 'paid'
+WHERE status IN ('paid', 'served', 'ready') OR payment_status = 'paid'
 GROUP BY date(created_at)
 ORDER BY day DESC
 LIMIT ?
@@ -97,25 +98,86 @@ func (q *Queries) DailySales(ctx context.Context, limit int64) ([]DailySalesRow,
 	return items, nil
 }
 
-const lowStockIngredients = `-- name: LowStockIngredients :many
-SELECT id, name, unit, stock_qty, low_stock_qty FROM ingredients WHERE stock_qty <= low_stock_qty ORDER BY stock_qty ASC
+const lowStockProducts = `-- name: LowStockProducts :many
+SELECT
+  mi.id,
+  mi.category_id,
+  COALESCE(mc.name, '') AS category_name,
+  mi.name,
+  mi.description,
+  mi.price_cents,
+  mi.cost_cents,
+  mi.image_url,
+  mi.sku,
+  mi.item_type,
+  mi.sort_order,
+  mi.active,
+  COALESCE(inv.stock_qty, 0) AS stock_qty,
+  COALESCE(inv.reorder_level, 0) AS reorder_level,
+  COALESCE(inv.unit, 'pcs') AS unit,
+  COALESCE(inv.track_stock, 1) AS track_stock,
+  CASE
+    WHEN COALESCE(inv.track_stock, 1) = 1 AND COALESCE(inv.stock_qty, 0) <= 0 THEN 1
+    ELSE 0
+  END AS out_of_stock,
+  mi.created_at
+FROM menu_items mi
+JOIN inventory inv ON inv.product_id = mi.id
+LEFT JOIN menu_categories mc ON mc.id = mi.category_id
+WHERE COALESCE(inv.track_stock, 1) = 1
+  AND COALESCE(inv.stock_qty, 0) <= COALESCE(inv.reorder_level, 0)
+ORDER BY inv.stock_qty ASC, mi.name ASC
 `
 
-func (q *Queries) LowStockIngredients(ctx context.Context) ([]Ingredient, error) {
-	rows, err := q.db.QueryContext(ctx, lowStockIngredients)
+type LowStockProductsRow struct {
+	ID           int64     `json:"id"`
+	CategoryID   int64     `json:"category_id"`
+	CategoryName string    `json:"category_name"`
+	Name         string    `json:"name"`
+	Description  string    `json:"description"`
+	PriceCents   int64     `json:"price_cents"`
+	CostCents    int64     `json:"cost_cents"`
+	ImageUrl     string    `json:"image_url"`
+	Sku          string    `json:"sku"`
+	ItemType     string    `json:"item_type"`
+	SortOrder    int64     `json:"sort_order"`
+	Active       int64     `json:"active"`
+	StockQty     float64   `json:"stock_qty"`
+	ReorderLevel float64   `json:"reorder_level"`
+	Unit         string    `json:"unit"`
+	TrackStock   int64     `json:"track_stock"`
+	OutOfStock   int64     `json:"out_of_stock"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+func (q *Queries) LowStockProducts(ctx context.Context) ([]LowStockProductsRow, error) {
+	rows, err := q.db.QueryContext(ctx, lowStockProducts)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Ingredient
+	var items []LowStockProductsRow
 	for rows.Next() {
-		var i Ingredient
+		var i LowStockProductsRow
 		if err := rows.Scan(
 			&i.ID,
+			&i.CategoryID,
+			&i.CategoryName,
 			&i.Name,
-			&i.Unit,
+			&i.Description,
+			&i.PriceCents,
+			&i.CostCents,
+			&i.ImageUrl,
+			&i.Sku,
+			&i.ItemType,
+			&i.SortOrder,
+			&i.Active,
 			&i.StockQty,
-			&i.LowStockQty,
+			&i.ReorderLevel,
+			&i.Unit,
+			&i.TrackStock,
+			&i.OutOfStock,
+			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}

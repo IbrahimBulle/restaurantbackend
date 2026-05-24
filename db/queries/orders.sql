@@ -1,7 +1,20 @@
 -- name: CreateOrder :one
 INSERT INTO orders (table_id, session_id, customer_name, status, payment_status, source, subtotal_cents, vat_cents, total_cents)
 VALUES (?, ?, ?, 'new', 'unpaid', ?, ?, ?, ?)
-RETURNING id, table_id, '' AS table_number, session_id, customer_name, status, payment_status, subtotal_cents, vat_cents, total_cents, source, created_at, updated_at;
+RETURNING
+  id,
+  table_id,
+  '' AS table_number,
+  session_id,
+  customer_name,
+  status,
+  payment_status,
+  subtotal_cents,
+  vat_cents,
+  total_cents,
+  source,
+  created_at,
+  updated_at;
 
 -- name: CreateOrderItem :one
 INSERT INTO order_items (order_id, menu_item_id, quantity, unit_price_cents, notes)
@@ -43,8 +56,23 @@ JOIN menu_items mi ON mi.id = oi.menu_item_id
 WHERE oi.order_id = ?;
 
 -- name: UpdateOrderStatus :one
-UPDATE orders SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
-RETURNING id, table_id, '' AS table_number, session_id, customer_name, status, payment_status, subtotal_cents, vat_cents, total_cents, source, created_at, updated_at;
+UPDATE orders
+SET status = ?, updated_at = CURRENT_TIMESTAMP
+WHERE id = ?
+RETURNING
+  id,
+  table_id,
+  '' AS table_number,
+  session_id,
+  customer_name,
+  status,
+  payment_status,
+  subtotal_cents,
+  vat_cents,
+  total_cents,
+  source,
+  created_at,
+  updated_at;
 
 -- name: GetOrder :one
 SELECT
@@ -87,18 +115,27 @@ WHERE o.session_id = ?
 ORDER BY o.created_at DESC
 LIMIT 1;
 
--- name: GetMenuItem :one
-SELECT id, category_id, name, description, price_cents, image_url, active, created_at FROM menu_items WHERE id = ?;
-
--- name: DeductIngredientStock :exec
-UPDATE ingredients
-SET stock_qty = stock_qty - (
-  SELECT mii.qty * ? FROM menu_item_ingredients AS mii WHERE mii.menu_item_id = ? AND mii.ingredient_id = ingredients.id
-)
-WHERE ingredients.id IN (SELECT mii.ingredient_id FROM menu_item_ingredients AS mii WHERE mii.menu_item_id = ?);
-
 -- name: UpdateOrderPaymentStatus :one
 UPDATE orders
 SET payment_status = ?, status = CASE WHEN ? = 'paid' THEN 'paid' ELSE status END, updated_at = CURRENT_TIMESTAMP
 WHERE id = ?
-RETURNING id, table_id, '' AS table_number, session_id, customer_name, status, payment_status, subtotal_cents, vat_cents, total_cents, source, created_at, updated_at;
+RETURNING
+  id,
+  table_id,
+  '' AS table_number,
+  session_id,
+  customer_name,
+  status,
+  payment_status,
+  subtotal_cents,
+  vat_cents,
+  total_cents,
+  source,
+  created_at,
+  updated_at;
+
+-- name: SessionHasOpenOrders :one
+SELECT COUNT(*)
+FROM orders
+WHERE session_id = ?
+  AND status NOT IN ('paid', 'cancelled');

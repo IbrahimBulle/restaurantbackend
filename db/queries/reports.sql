@@ -1,7 +1,7 @@
 -- name: DailySales :many
 SELECT date(created_at) AS day, COUNT(*) AS order_count, SUM(total_cents) AS revenue_cents
 FROM orders
-WHERE status IN ('paid','served','ready') OR payment_status = 'paid'
+WHERE status IN ('paid', 'served', 'ready') OR payment_status = 'paid'
 GROUP BY date(created_at)
 ORDER BY day DESC
 LIMIT ?;
@@ -14,8 +14,35 @@ GROUP BY mi.id, mi.name
 ORDER BY quantity DESC
 LIMIT ?;
 
--- name: LowStockIngredients :many
-SELECT id, name, unit, stock_qty, low_stock_qty FROM ingredients WHERE stock_qty <= low_stock_qty ORDER BY stock_qty ASC;
+-- name: LowStockProducts :many
+SELECT
+  mi.id,
+  mi.category_id,
+  COALESCE(mc.name, '') AS category_name,
+  mi.name,
+  mi.description,
+  mi.price_cents,
+  mi.cost_cents,
+  mi.image_url,
+  mi.sku,
+  mi.item_type,
+  mi.sort_order,
+  mi.active,
+  COALESCE(inv.stock_qty, 0) AS stock_qty,
+  COALESCE(inv.reorder_level, 0) AS reorder_level,
+  COALESCE(inv.unit, 'pcs') AS unit,
+  COALESCE(inv.track_stock, 1) AS track_stock,
+  CASE
+    WHEN COALESCE(inv.track_stock, 1) = 1 AND COALESCE(inv.stock_qty, 0) <= 0 THEN 1
+    ELSE 0
+  END AS out_of_stock,
+  mi.created_at
+FROM menu_items mi
+JOIN inventory inv ON inv.product_id = mi.id
+LEFT JOIN menu_categories mc ON mc.id = mi.category_id
+WHERE COALESCE(inv.track_stock, 1) = 1
+  AND COALESCE(inv.stock_qty, 0) <= COALESCE(inv.reorder_level, 0)
+ORDER BY inv.stock_qty ASC, mi.name ASC;
 
 -- name: PaymentMethodStats :many
 SELECT method, COUNT(*) AS count, COALESCE(SUM(amount_cents), 0) AS revenue_cents

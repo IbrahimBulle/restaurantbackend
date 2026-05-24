@@ -53,6 +53,7 @@ type TableSession struct {
 type TableContext struct {
 	Table       Table        `json:"table"`
 	Session     TableSession `json:"session"`
+	Business    Settings     `json:"business"`
 	ActiveOrder *Order       `json:"active_order,omitempty"`
 }
 
@@ -70,8 +71,62 @@ type MenuItem struct {
 	Description string    `json:"description"`
 	PriceCents  int64     `json:"price_cents"`
 	ImageURL    string    `json:"image_url"`
+	SKU         string    `json:"sku"`
+	ItemType    string    `json:"item_type"`
+	CostCents   int64     `json:"cost_cents"`
+	SortOrder   int       `json:"sort_order"`
 	Active      bool      `json:"active"`
 	CreatedAt   time.Time `json:"created_at"`
+}
+
+type Product struct {
+	ID           int64     `json:"id"`
+	CategoryID   int64     `json:"category_id"`
+	CategoryName string    `json:"category_name"`
+	Name         string    `json:"name"`
+	Description  string    `json:"description"`
+	PriceCents   int64     `json:"price_cents"`
+	CostCents    int64     `json:"cost_cents"`
+	ImageURL     string    `json:"image_url"`
+	SKU          string    `json:"sku"`
+	ItemType     string    `json:"item_type"`
+	SortOrder    int       `json:"sort_order"`
+	Active       bool      `json:"active"`
+	StockQty     float64   `json:"stock_qty"`
+	ReorderLevel float64   `json:"reorder_level"`
+	Unit         string    `json:"unit"`
+	TrackStock   bool      `json:"track_stock"`
+	OutOfStock   bool      `json:"out_of_stock"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+type InventoryMovement struct {
+	ID          int64     `json:"id"`
+	ProductID   int64     `json:"product_id"`
+	ProductName string    `json:"product_name,omitempty"`
+	ChangeQty   float64   `json:"change_qty"`
+	Reason      string    `json:"reason"`
+	Reference   string    `json:"reference"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+type InventoryAdjustment struct {
+	ProductID int64   `json:"product_id"`
+	ChangeQty float64 `json:"change_qty"`
+	Reason    string  `json:"reason"`
+	Reference string  `json:"reference"`
+}
+
+type Settings struct {
+	ID            int64     `json:"id"`
+	BusinessName  string    `json:"business_name"`
+	BusinessType  string    `json:"business_type"`
+	Phone         string    `json:"phone"`
+	CurrencyCode  string    `json:"currency_code"`
+	MPesaTill     string    `json:"mpesa_till"`
+	ReceiptFooter string    `json:"receipt_footer"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 type Order struct {
@@ -163,4 +218,24 @@ type BestSeller struct {
 	Name         string `json:"name"`
 	Quantity     int64  `json:"quantity"`
 	RevenueCents int64  `json:"revenue_cents"`
+}
+
+type DashboardSnapshot struct {
+	Business            Settings            `json:"business"`
+	DailyRevenueCents   int64               `json:"daily_revenue_cents"`
+	WeeklyRevenueCents  int64               `json:"weekly_revenue_cents"`
+	MonthlyRevenueCents int64               `json:"monthly_revenue_cents"`
+	DailyProfitCents    int64               `json:"daily_profit_cents"`
+	WeeklyProfitCents   int64               `json:"weekly_profit_cents"`
+	MonthlyProfitCents  int64               `json:"monthly_profit_cents"`
+	OpenOrders          int64               `json:"open_orders"`
+	PaidOrdersToday     int64               `json:"paid_orders_today"`
+	ProductsCount       int64               `json:"products_count"`
+	ActiveOrderPoints   int64               `json:"active_order_points"`
+	BestSellers         []BestSeller        `json:"best_sellers"`
+	RecentOrders        []Order             `json:"recent_orders"`
+	RecentPayments      []Payment           `json:"recent_payments"`
+	LowStockProducts    []Product           `json:"low_stock_products"`
+	SalesTrend          []SalesPoint        `json:"sales_trend"`
+	PaymentMethods      []PaymentMethodStat `json:"payment_methods"`
 }

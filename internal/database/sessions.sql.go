@@ -11,6 +11,20 @@ import (
 	"time"
 )
 
+const closeSession = `-- name: CloseSession :exec
+UPDATE sessions
+SET
+  status = 'closed',
+  ended_at = CURRENT_TIMESTAMP,
+  last_seen_at = CURRENT_TIMESTAMP
+WHERE id = ?
+`
+
+func (q *Queries) CloseSession(ctx context.Context, id int64) error {
+	_, err := q.db.ExecContext(ctx, closeSession, id)
+	return err
+}
+
 const createSession = `-- name: CreateSession :one
 INSERT INTO sessions (table_id, token, customer_name)
 VALUES (?, ?, ?)

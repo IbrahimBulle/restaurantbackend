@@ -190,10 +190,20 @@ func (s *Service) ResolveTableContext(ctx context.Context, identifier, sessionTo
 	if err != nil {
 		return domain.TableContext{}, err
 	}
+	settings, settingsErr := s.repo.GetSettings(ctx)
+	if settingsErr != nil {
+		settings = domain.Settings{
+			BusinessName:  "MauzoHub",
+			BusinessType:  "Business",
+			CurrencyCode:  "KES",
+			ReceiptFooter: "Thank you for your purchase.",
+		}
+	}
 
 	return domain.TableContext{
 		Table:       table,
 		Session:     session,
+		Business:    settings,
 		ActiveOrder: order,
 	}, nil
 }
@@ -219,9 +229,19 @@ func (s *Service) SessionContext(ctx context.Context, sessionToken, baseURL stri
 	if err != nil {
 		return domain.TableContext{}, err
 	}
+	settings, settingsErr := s.repo.GetSettings(ctx)
+	if settingsErr != nil {
+		settings = domain.Settings{
+			BusinessName:  "MauzoHub",
+			BusinessType:  "Business",
+			CurrencyCode:  "KES",
+			ReceiptFooter: "Thank you for your purchase.",
+		}
+	}
 	return domain.TableContext{
 		Table:       table,
 		Session:     session,
+		Business:    settings,
 		ActiveOrder: order,
 	}, nil
 }
@@ -249,6 +269,9 @@ func (s *Service) CreateMenuItem(ctx context.Context, input repository.SaveMenuI
 	if input.PriceCents < 0 {
 		return domain.MenuItem{}, errors.New("price must be zero or greater")
 	}
+	if input.CostCents < 0 {
+		return domain.MenuItem{}, errors.New("cost must be zero or greater")
+	}
 	return s.repo.CreateMenuItem(ctx, input)
 }
 
@@ -258,6 +281,9 @@ func (s *Service) UpdateMenuItem(ctx context.Context, id int64, input repository
 	}
 	if input.PriceCents < 0 {
 		return domain.MenuItem{}, errors.New("price must be zero or greater")
+	}
+	if input.CostCents < 0 {
+		return domain.MenuItem{}, errors.New("cost must be zero or greater")
 	}
 	return s.repo.UpdateMenuItem(ctx, id, input)
 }
@@ -361,6 +387,10 @@ func (s *Service) CreateMpesaPayment(ctx context.Context, orderID int64, phoneNu
 	if err != nil {
 		return domain.Order{}, domain.Payment{}, nil, err
 	}
+	normalizedPhone, err := normalizeKenyanPhone(phoneNumber)
+	if err != nil {
+		return domain.Order{}, domain.Payment{}, nil, err
+	}
 	if amount <= 0 {
 		amount = order.TotalCents
 	}
@@ -368,7 +398,7 @@ func (s *Service) CreateMpesaPayment(ctx context.Context, orderID int64, phoneNu
 	metadata, _ := json.Marshal(map[string]any{
 		"short_code":   s.config.MPesaShortCode,
 		"callback_url": s.config.MPesaCallbackURL,
-		"phone_number": strings.TrimSpace(phoneNumber),
+		"phone_number": normalizedPhone,
 		"channel":      "stk_push",
 	})
 	status := "pending"
@@ -381,7 +411,7 @@ func (s *Service) CreateMpesaPayment(ctx context.Context, orderID int64, phoneNu
 		AmountCents:  amount,
 		Status:       status,
 		Reference:    reference,
-		PhoneNumber:  strings.TrimSpace(phoneNumber),
+		PhoneNumber:  normalizedPhone,
 		Provider:     "mpesa",
 		MetadataJSON: string(metadata),
 	})
@@ -410,6 +440,65 @@ func (s *Service) Receipt(ctx context.Context, orderID int64) (*domain.Receipt, 
 
 func (s *Service) Analytics(ctx context.Context) (domain.AnalyticsSnapshot, error) {
 	return s.repo.Analytics(ctx)
+}
+
+func (s *Service) Products(ctx context.Context) ([]domain.Product, error) {
+	return s.repo.ListProducts(ctx)
+}
+
+func (s *Service) Product(ctx context.Context, id int64) (domain.Product, error) {
+	return s.repo.GetProduct(ctx, id)
+}
+
+func (s *Service) ArchiveProduct(ctx context.Context, id int64) error {
+	if id <= 0 {
+		return errors.New("invalid product id")
+	}
+	return s.repo.ArchiveProduct(ctx, id)
+}
+
+func (s *Service) AdjustInventory(ctx context.Context, input domain.InventoryAdjustment) (domain.Product, error) {
+	if input.ProductID <= 0 {
+		return domain.Product{}, errors.New("product is required")
+	}
+	if input.ChangeQty == 0 {
+		return domain.Product{}, errors.New("stock change cannot be zero")
+	}
+	return s.repo.AdjustInventory(ctx, input)
+}
+
+func (s *Service) InventoryMovements(ctx context.Context, limit int) ([]domain.InventoryMovement, error) {
+	return s.repo.ListInventoryMovements(ctx, limit)
+}
+
+func (s *Service) Settings(ctx context.Context) (domain.Settings, error) {
+	return s.repo.GetSettings(ctx)
+}
+
+func (s *Service) SaveSettings(ctx context.Context, input domain.Settings) (domain.Settings, error) {
+	input.BusinessName = strings.TrimSpace(input.BusinessName)
+	if input.BusinessName == "" {
+		return domain.Settings{}, errors.New("business name is required")
+	}
+	input.BusinessType = strings.TrimSpace(input.BusinessType)
+	if input.BusinessType == "" {
+		input.BusinessType = "Business"
+	}
+	input.Phone = strings.TrimSpace(input.Phone)
+	input.MPesaTill = strings.TrimSpace(input.MPesaTill)
+	input.CurrencyCode = strings.ToUpper(strings.TrimSpace(input.CurrencyCode))
+	if input.CurrencyCode == "" {
+		input.CurrencyCode = "KES"
+	}
+	input.ReceiptFooter = strings.TrimSpace(input.ReceiptFooter)
+	if strings.TrimSpace(input.ReceiptFooter) == "" {
+		input.ReceiptFooter = "Thank you for your purchase."
+	}
+	return s.repo.SaveSettings(ctx, input)
+}
+
+func (s *Service) DashboardSnapshot(ctx context.Context) (domain.DashboardSnapshot, error) {
+	return s.repo.DashboardSnapshot(ctx)
 }
 
 func (s *Service) confirmSettledPayment(ctx context.Context, payment domain.Payment) (domain.Order, domain.Payment, *domain.Receipt, error) {
@@ -445,6 +534,13 @@ func (s *Service) ensureReceipt(ctx context.Context, order domain.Order, payment
 	if existing != nil {
 		return existing, nil
 	}
+	settings, settingsErr := s.repo.GetSettings(ctx)
+	if settingsErr != nil {
+		settings = domain.Settings{
+			BusinessName:  "MauzoHub",
+			ReceiptFooter: "Thank you for your purchase.",
+		}
+	}
 	payload, err := json.Marshal(map[string]any{
 		"order_id":       order.ID,
 		"table_number":   order.TableNumber,
@@ -462,9 +558,15 @@ func (s *Service) ensureReceipt(ctx context.Context, order domain.Order, payment
 			"provider":     payment.Provider,
 			"confirmed_at": payment.ConfirmedAt,
 		},
-		"items":      order.Items,
-		"issued_at":  time.Now().UTC(),
-		"restaurant": "QRDine",
+		"items":     order.Items,
+		"issued_at": time.Now().UTC(),
+		"business": map[string]any{
+			"name":     settings.BusinessName,
+			"footer":   settings.ReceiptFooter,
+			"phone":    settings.Phone,
+			"mpesa":    settings.MPesaTill,
+			"currency": settings.CurrencyCode,
+		},
 	})
 	if err != nil {
 		return nil, err
@@ -510,6 +612,9 @@ func normalizeOrderStatus(status string) string {
 	status = strings.TrimSpace(strings.ToLower(status))
 	if status == "pending" {
 		return "new"
+	}
+	if status == "completed" {
+		return "served"
 	}
 	return status
 }
@@ -567,4 +672,24 @@ func randomToken(size int) string {
 		return "fallback"
 	}
 	return hex.EncodeToString(buf)
+}
+
+func normalizeKenyanPhone(value string) (string, error) {
+	digits := strings.Map(func(r rune) rune {
+		if r >= '0' && r <= '9' {
+			return r
+		}
+		return -1
+	}, strings.TrimSpace(value))
+
+	switch {
+	case len(digits) == 9 && (digits[0] == '7' || digits[0] == '1'):
+		return "+254" + digits, nil
+	case len(digits) == 10 && digits[0] == '0' && (digits[1] == '7' || digits[1] == '1'):
+		return "+254" + digits[1:], nil
+	case len(digits) == 12 && strings.HasPrefix(digits, "254") && (digits[3] == '7' || digits[3] == '1'):
+		return "+" + digits, nil
+	default:
+		return "", errors.New("enter a valid Kenyan M-Pesa phone number")
+	}
 }

@@ -17,6 +17,24 @@ type Ingredient struct {
 	LowStockQty float64 `json:"low_stock_qty"`
 }
 
+type Inventory struct {
+	ProductID    int64     `json:"product_id"`
+	StockQty     float64   `json:"stock_qty"`
+	ReorderLevel float64   `json:"reorder_level"`
+	Unit         string    `json:"unit"`
+	TrackStock   int64     `json:"track_stock"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+type InventoryMovement struct {
+	ID        int64     `json:"id"`
+	ProductID int64     `json:"product_id"`
+	ChangeQty float64   `json:"change_qty"`
+	Reason    string    `json:"reason"`
+	Reference string    `json:"reference"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type MenuCategory struct {
 	ID        int64  `json:"id"`
 	Name      string `json:"name"`
@@ -33,6 +51,10 @@ type MenuItem struct {
 	ImageUrl    string    `json:"image_url"`
 	Active      int64     `json:"active"`
 	CreatedAt   time.Time `json:"created_at"`
+	Sku         string    `json:"sku"`
+	ItemType    string    `json:"item_type"`
+	CostCents   int64     `json:"cost_cents"`
+	SortOrder   int64     `json:"sort_order"`
 }
 
 type MenuItemIngredient struct {
@@ -118,6 +140,18 @@ type Session struct {
 	StartedAt    time.Time    `json:"started_at"`
 	LastSeenAt   time.Time    `json:"last_seen_at"`
 	EndedAt      sql.NullTime `json:"ended_at"`
+}
+
+type Setting struct {
+	ID            int64     `json:"id"`
+	BusinessName  string    `json:"business_name"`
+	BusinessType  string    `json:"business_type"`
+	Phone         string    `json:"phone"`
+	CurrencyCode  string    `json:"currency_code"`
+	MpesaTill     string    `json:"mpesa_till"`
+	ReceiptFooter string    `json:"receipt_footer"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 type User struct {

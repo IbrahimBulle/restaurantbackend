@@ -14,7 +14,20 @@ import (
 const createOrder = `-- name: CreateOrder :one
 INSERT INTO orders (table_id, session_id, customer_name, status, payment_status, source, subtotal_cents, vat_cents, total_cents)
 VALUES (?, ?, ?, 'new', 'unpaid', ?, ?, ?, ?)
-RETURNING id, table_id, '' AS table_number, session_id, customer_name, status, payment_status, subtotal_cents, vat_cents, total_cents, source, created_at, updated_at
+RETURNING
+  id,
+  table_id,
+  '' AS table_number,
+  session_id,
+  customer_name,
+  status,
+  payment_status,
+  subtotal_cents,
+  vat_cents,
+  total_cents,
+  source,
+  created_at,
+  updated_at
 `
 
 type CreateOrderParams struct {
@@ -107,25 +120,6 @@ func (q *Queries) CreateOrderItem(ctx context.Context, arg CreateOrderItemParams
 	return i, err
 }
 
-const deductIngredientStock = `-- name: DeductIngredientStock :exec
-UPDATE ingredients
-SET stock_qty = stock_qty - (
-  SELECT mii.qty * ? FROM menu_item_ingredients AS mii WHERE mii.menu_item_id = ? AND mii.ingredient_id = ingredients.id
-)
-WHERE ingredients.id IN (SELECT mii.ingredient_id FROM menu_item_ingredients AS mii WHERE mii.menu_item_id = ?)
-`
-
-type DeductIngredientStockParams struct {
-	Qty          float64 `json:"qty"`
-	MenuItemID   int64   `json:"menu_item_id"`
-	MenuItemID_2 int64   `json:"menu_item_id_2"`
-}
-
-func (q *Queries) DeductIngredientStock(ctx context.Context, arg DeductIngredientStockParams) error {
-	_, err := q.db.ExecContext(ctx, deductIngredientStock, arg.Qty, arg.MenuItemID, arg.MenuItemID_2)
-	return err
-}
-
 const getLatestOrderForSession = `-- name: GetLatestOrderForSession :one
 SELECT
   o.id,
@@ -181,26 +175,6 @@ func (q *Queries) GetLatestOrderForSession(ctx context.Context, sessionID sql.Nu
 		&i.Source,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const getMenuItem = `-- name: GetMenuItem :one
-SELECT id, category_id, name, description, price_cents, image_url, active, created_at FROM menu_items WHERE id = ?
-`
-
-func (q *Queries) GetMenuItem(ctx context.Context, id int64) (MenuItem, error) {
-	row := q.db.QueryRowContext(ctx, getMenuItem, id)
-	var i MenuItem
-	err := row.Scan(
-		&i.ID,
-		&i.CategoryID,
-		&i.Name,
-		&i.Description,
-		&i.PriceCents,
-		&i.ImageUrl,
-		&i.Active,
-		&i.CreatedAt,
 	)
 	return i, err
 }
@@ -395,11 +369,38 @@ func (q *Queries) ListOrders(ctx context.Context, limit int64) ([]ListOrdersRow,
 	return items, nil
 }
 
+const sessionHasOpenOrders = `-- name: SessionHasOpenOrders :one
+SELECT COUNT(*)
+FROM orders
+WHERE session_id = ?
+  AND status NOT IN ('paid', 'cancelled')
+`
+
+func (q *Queries) SessionHasOpenOrders(ctx context.Context, sessionID sql.NullInt64) (int64, error) {
+	row := q.db.QueryRowContext(ctx, sessionHasOpenOrders, sessionID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const updateOrderPaymentStatus = `-- name: UpdateOrderPaymentStatus :one
 UPDATE orders
 SET payment_status = ?, status = CASE WHEN ? = 'paid' THEN 'paid' ELSE status END, updated_at = CURRENT_TIMESTAMP
 WHERE id = ?
-RETURNING id, table_id, '' AS table_number, session_id, customer_name, status, payment_status, subtotal_cents, vat_cents, total_cents, source, created_at, updated_at
+RETURNING
+  id,
+  table_id,
+  '' AS table_number,
+  session_id,
+  customer_name,
+  status,
+  payment_status,
+  subtotal_cents,
+  vat_cents,
+  total_cents,
+  source,
+  created_at,
+  updated_at
 `
 
 type UpdateOrderPaymentStatusParams struct {
@@ -446,8 +447,23 @@ func (q *Queries) UpdateOrderPaymentStatus(ctx context.Context, arg UpdateOrderP
 }
 
 const updateOrderStatus = `-- name: UpdateOrderStatus :one
-UPDATE orders SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
-RETURNING id, table_id, '' AS table_number, session_id, customer_name, status, payment_status, subtotal_cents, vat_cents, total_cents, source, created_at, updated_at
+UPDATE orders
+SET status = ?, updated_at = CURRENT_TIMESTAMP
+WHERE id = ?
+RETURNING
+  id,
+  table_id,
+  '' AS table_number,
+  session_id,
+  customer_name,
+  status,
+  payment_status,
+  subtotal_cents,
+  vat_cents,
+  total_cents,
+  source,
+  created_at,
+  updated_at
 `
 
 type UpdateOrderStatusParams struct {

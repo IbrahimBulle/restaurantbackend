@@ -14,7 +14,17 @@ import (
 const createTable = `-- name: CreateTable :one
 INSERT INTO restaurant_tables (number, seats, qr_token, slug)
 VALUES (?, ?, ?, ?)
-RETURNING id, number, seats, status, COALESCE(slug, ''), qr_token, '', '', COALESCE(active, 1), created_at
+RETURNING
+  id,
+  number,
+  seats,
+  status,
+  COALESCE(slug, '') AS slug,
+  qr_token,
+  '' AS qr_url,
+  '' AS qr_image_data,
+  COALESCE(active, 1) AS active,
+  created_at
 `
 
 type CreateTableParams struct {
@@ -54,6 +64,55 @@ func (q *Queries) CreateTable(ctx context.Context, arg CreateTableParams) (Creat
 		&i.QrToken,
 		&i.Column7,
 		&i.Column8,
+		&i.Active,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getTableByID = `-- name: GetTableByID :one
+SELECT
+  t.id,
+  t.number,
+  t.seats,
+  t.status,
+  COALESCE(t.slug, '') AS slug,
+  t.qr_token,
+  COALESCE(q.public_url, '') AS qr_url,
+  COALESCE(q.image_data, '') AS qr_image_data,
+  COALESCE(t.active, 1) AS active,
+  t.created_at
+FROM restaurant_tables t
+LEFT JOIN qr_codes q ON q.table_id = t.id
+WHERE t.id = ?
+LIMIT 1
+`
+
+type GetTableByIDRow struct {
+	ID          int64     `json:"id"`
+	Number      string    `json:"number"`
+	Seats       int64     `json:"seats"`
+	Status      string    `json:"status"`
+	Slug        string    `json:"slug"`
+	QrToken     string    `json:"qr_token"`
+	QrUrl       string    `json:"qr_url"`
+	QrImageData string    `json:"qr_image_data"`
+	Active      int64     `json:"active"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+func (q *Queries) GetTableByID(ctx context.Context, id int64) (GetTableByIDRow, error) {
+	row := q.db.QueryRowContext(ctx, getTableByID, id)
+	var i GetTableByIDRow
+	err := row.Scan(
+		&i.ID,
+		&i.Number,
+		&i.Seats,
+		&i.Status,
+		&i.Slug,
+		&i.QrToken,
+		&i.QrUrl,
+		&i.QrImageData,
 		&i.Active,
 		&i.CreatedAt,
 	)
@@ -180,8 +239,20 @@ func (q *Queries) ListTables(ctx context.Context) ([]ListTablesRow, error) {
 }
 
 const updateTableStatus = `-- name: UpdateTableStatus :one
-UPDATE restaurant_tables SET status = ? WHERE id = ?
-RETURNING id, number, seats, status, COALESCE(slug, ''), qr_token, '', '', COALESCE(active, 1), created_at
+UPDATE restaurant_tables
+SET status = ?
+WHERE id = ?
+RETURNING
+  id,
+  number,
+  seats,
+  status,
+  COALESCE(slug, '') AS slug,
+  qr_token,
+  '' AS qr_url,
+  '' AS qr_image_data,
+  COALESCE(active, 1) AS active,
+  created_at
 `
 
 type UpdateTableStatusParams struct {

@@ -19,6 +19,7 @@ const userContextKey contextKey = "user"
 
 type Claims struct {
 	UserID    int64       `json:"user_id"`
+	Name      string      `json:"name"`
 	Email     string      `json:"email"`
 	Role      domain.Role `json:"role"`
 	TokenType string      `json:"token_type"`
@@ -54,6 +55,7 @@ func IssueRefreshToken(secret string, user domain.User) (string, error) {
 func issueToken(secret string, user domain.User, tokenType string, ttl time.Duration) (string, error) {
 	claims := Claims{
 		UserID:    user.ID,
+		Name:      user.Name,
 		Email:     user.Email,
 		Role:      user.Role,
 		TokenType: tokenType,

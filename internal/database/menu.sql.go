@@ -7,10 +7,293 @@ package database
 
 import (
 	"context"
+	"time"
 )
 
+const archiveMenuItem = `-- name: ArchiveMenuItem :exec
+UPDATE menu_items
+SET active = 0
+WHERE id = ?
+`
+
+func (q *Queries) ArchiveMenuItem(ctx context.Context, id int64) error {
+	_, err := q.db.ExecContext(ctx, archiveMenuItem, id)
+	return err
+}
+
+const createCategory = `-- name: CreateCategory :one
+INSERT INTO menu_categories (name, sort_order, active)
+VALUES (?, ?, 1)
+RETURNING id, name, sort_order, active
+`
+
+type CreateCategoryParams struct {
+	Name      string `json:"name"`
+	SortOrder int64  `json:"sort_order"`
+}
+
+func (q *Queries) CreateCategory(ctx context.Context, arg CreateCategoryParams) (MenuCategory, error) {
+	row := q.db.QueryRowContext(ctx, createCategory, arg.Name, arg.SortOrder)
+	var i MenuCategory
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.SortOrder,
+		&i.Active,
+	)
+	return i, err
+}
+
+const createMenuItem = `-- name: CreateMenuItem :one
+INSERT INTO menu_items (
+  category_id,
+  name,
+  description,
+  price_cents,
+  image_url,
+  sku,
+  item_type,
+  cost_cents,
+  sort_order,
+  active
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING
+  id,
+  category_id,
+  name,
+  description,
+  price_cents,
+  image_url,
+  sku,
+  item_type,
+  cost_cents,
+  sort_order,
+  active,
+  created_at
+`
+
+type CreateMenuItemParams struct {
+	CategoryID  int64  `json:"category_id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	PriceCents  int64  `json:"price_cents"`
+	ImageUrl    string `json:"image_url"`
+	Sku         string `json:"sku"`
+	ItemType    string `json:"item_type"`
+	CostCents   int64  `json:"cost_cents"`
+	SortOrder   int64  `json:"sort_order"`
+	Active      int64  `json:"active"`
+}
+
+type CreateMenuItemRow struct {
+	ID          int64     `json:"id"`
+	CategoryID  int64     `json:"category_id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	PriceCents  int64     `json:"price_cents"`
+	ImageUrl    string    `json:"image_url"`
+	Sku         string    `json:"sku"`
+	ItemType    string    `json:"item_type"`
+	CostCents   int64     `json:"cost_cents"`
+	SortOrder   int64     `json:"sort_order"`
+	Active      int64     `json:"active"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+func (q *Queries) CreateMenuItem(ctx context.Context, arg CreateMenuItemParams) (CreateMenuItemRow, error) {
+	row := q.db.QueryRowContext(ctx, createMenuItem,
+		arg.CategoryID,
+		arg.Name,
+		arg.Description,
+		arg.PriceCents,
+		arg.ImageUrl,
+		arg.Sku,
+		arg.ItemType,
+		arg.CostCents,
+		arg.SortOrder,
+		arg.Active,
+	)
+	var i CreateMenuItemRow
+	err := row.Scan(
+		&i.ID,
+		&i.CategoryID,
+		&i.Name,
+		&i.Description,
+		&i.PriceCents,
+		&i.ImageUrl,
+		&i.Sku,
+		&i.ItemType,
+		&i.CostCents,
+		&i.SortOrder,
+		&i.Active,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getMenuItem = `-- name: GetMenuItem :one
+SELECT
+  id,
+  category_id,
+  name,
+  description,
+  price_cents,
+  image_url,
+  sku,
+  item_type,
+  cost_cents,
+  sort_order,
+  active,
+  created_at
+FROM menu_items
+WHERE id = ?
+LIMIT 1
+`
+
+type GetMenuItemRow struct {
+	ID          int64     `json:"id"`
+	CategoryID  int64     `json:"category_id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	PriceCents  int64     `json:"price_cents"`
+	ImageUrl    string    `json:"image_url"`
+	Sku         string    `json:"sku"`
+	ItemType    string    `json:"item_type"`
+	CostCents   int64     `json:"cost_cents"`
+	SortOrder   int64     `json:"sort_order"`
+	Active      int64     `json:"active"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+func (q *Queries) GetMenuItem(ctx context.Context, id int64) (GetMenuItemRow, error) {
+	row := q.db.QueryRowContext(ctx, getMenuItem, id)
+	var i GetMenuItemRow
+	err := row.Scan(
+		&i.ID,
+		&i.CategoryID,
+		&i.Name,
+		&i.Description,
+		&i.PriceCents,
+		&i.ImageUrl,
+		&i.Sku,
+		&i.ItemType,
+		&i.CostCents,
+		&i.SortOrder,
+		&i.Active,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const listAdminCategories = `-- name: ListAdminCategories :many
+SELECT id, name, sort_order, active
+FROM menu_categories
+ORDER BY active DESC, sort_order, name
+`
+
+func (q *Queries) ListAdminCategories(ctx context.Context) ([]MenuCategory, error) {
+	rows, err := q.db.QueryContext(ctx, listAdminCategories)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []MenuCategory
+	for rows.Next() {
+		var i MenuCategory
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.SortOrder,
+			&i.Active,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAdminMenuItems = `-- name: ListAdminMenuItems :many
+SELECT
+  id,
+  category_id,
+  name,
+  description,
+  price_cents,
+  image_url,
+  sku,
+  item_type,
+  cost_cents,
+  sort_order,
+  active,
+  created_at
+FROM menu_items
+ORDER BY active DESC, category_id, sort_order, name
+`
+
+type ListAdminMenuItemsRow struct {
+	ID          int64     `json:"id"`
+	CategoryID  int64     `json:"category_id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	PriceCents  int64     `json:"price_cents"`
+	ImageUrl    string    `json:"image_url"`
+	Sku         string    `json:"sku"`
+	ItemType    string    `json:"item_type"`
+	CostCents   int64     `json:"cost_cents"`
+	SortOrder   int64     `json:"sort_order"`
+	Active      int64     `json:"active"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+func (q *Queries) ListAdminMenuItems(ctx context.Context) ([]ListAdminMenuItemsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listAdminMenuItems)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAdminMenuItemsRow
+	for rows.Next() {
+		var i ListAdminMenuItemsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.CategoryID,
+			&i.Name,
+			&i.Description,
+			&i.PriceCents,
+			&i.ImageUrl,
+			&i.Sku,
+			&i.ItemType,
+			&i.CostCents,
+			&i.SortOrder,
+			&i.Active,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listCategories = `-- name: ListCategories :many
-SELECT id, name, sort_order, active FROM menu_categories WHERE active = 1 ORDER BY sort_order, name
+SELECT id, name, sort_order, active
+FROM menu_categories
+WHERE active = 1
+ORDER BY sort_order, name
 `
 
 func (q *Queries) ListCategories(ctx context.Context) ([]MenuCategory, error) {
@@ -42,21 +325,48 @@ func (q *Queries) ListCategories(ctx context.Context) ([]MenuCategory, error) {
 }
 
 const listMenuItems = `-- name: ListMenuItems :many
-SELECT id, category_id, name, description, price_cents, image_url, active, created_at
+SELECT
+  id,
+  category_id,
+  name,
+  description,
+  price_cents,
+  image_url,
+  sku,
+  item_type,
+  cost_cents,
+  sort_order,
+  active,
+  created_at
 FROM menu_items
 WHERE active = 1
-ORDER BY category_id, name
+ORDER BY category_id, sort_order, name
 `
 
-func (q *Queries) ListMenuItems(ctx context.Context) ([]MenuItem, error) {
+type ListMenuItemsRow struct {
+	ID          int64     `json:"id"`
+	CategoryID  int64     `json:"category_id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	PriceCents  int64     `json:"price_cents"`
+	ImageUrl    string    `json:"image_url"`
+	Sku         string    `json:"sku"`
+	ItemType    string    `json:"item_type"`
+	CostCents   int64     `json:"cost_cents"`
+	SortOrder   int64     `json:"sort_order"`
+	Active      int64     `json:"active"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+func (q *Queries) ListMenuItems(ctx context.Context) ([]ListMenuItemsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listMenuItems)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []MenuItem
+	var items []ListMenuItemsRow
 	for rows.Next() {
-		var i MenuItem
+		var i ListMenuItemsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.CategoryID,
@@ -64,6 +374,10 @@ func (q *Queries) ListMenuItems(ctx context.Context) ([]MenuItem, error) {
 			&i.Description,
 			&i.PriceCents,
 			&i.ImageUrl,
+			&i.Sku,
+			&i.ItemType,
+			&i.CostCents,
+			&i.SortOrder,
 			&i.Active,
 			&i.CreatedAt,
 		); err != nil {
@@ -80,38 +394,79 @@ func (q *Queries) ListMenuItems(ctx context.Context) ([]MenuItem, error) {
 	return items, nil
 }
 
-const upsertMenuItem = `-- name: UpsertMenuItem :one
-INSERT INTO menu_items (category_id, name, description, price_cents, image_url, active)
-VALUES (?, ?, ?, ?, ?, ?)
-ON CONFLICT(id) DO UPDATE SET
-  category_id = excluded.category_id,
-  name = excluded.name,
-  description = excluded.description,
-  price_cents = excluded.price_cents,
-  image_url = excluded.image_url,
-  active = excluded.active
-RETURNING id, category_id, name, description, price_cents, image_url, active, created_at
+const updateMenuItem = `-- name: UpdateMenuItem :one
+UPDATE menu_items
+SET
+  category_id = ?,
+  name = ?,
+  description = ?,
+  price_cents = ?,
+  image_url = ?,
+  sku = ?,
+  item_type = ?,
+  cost_cents = ?,
+  sort_order = ?,
+  active = ?
+WHERE id = ?
+RETURNING
+  id,
+  category_id,
+  name,
+  description,
+  price_cents,
+  image_url,
+  sku,
+  item_type,
+  cost_cents,
+  sort_order,
+  active,
+  created_at
 `
 
-type UpsertMenuItemParams struct {
+type UpdateMenuItemParams struct {
 	CategoryID  int64  `json:"category_id"`
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	PriceCents  int64  `json:"price_cents"`
 	ImageUrl    string `json:"image_url"`
+	Sku         string `json:"sku"`
+	ItemType    string `json:"item_type"`
+	CostCents   int64  `json:"cost_cents"`
+	SortOrder   int64  `json:"sort_order"`
 	Active      int64  `json:"active"`
+	ID          int64  `json:"id"`
 }
 
-func (q *Queries) UpsertMenuItem(ctx context.Context, arg UpsertMenuItemParams) (MenuItem, error) {
-	row := q.db.QueryRowContext(ctx, upsertMenuItem,
+type UpdateMenuItemRow struct {
+	ID          int64     `json:"id"`
+	CategoryID  int64     `json:"category_id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	PriceCents  int64     `json:"price_cents"`
+	ImageUrl    string    `json:"image_url"`
+	Sku         string    `json:"sku"`
+	ItemType    string    `json:"item_type"`
+	CostCents   int64     `json:"cost_cents"`
+	SortOrder   int64     `json:"sort_order"`
+	Active      int64     `json:"active"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+func (q *Queries) UpdateMenuItem(ctx context.Context, arg UpdateMenuItemParams) (UpdateMenuItemRow, error) {
+	row := q.db.QueryRowContext(ctx, updateMenuItem,
 		arg.CategoryID,
 		arg.Name,
 		arg.Description,
 		arg.PriceCents,
 		arg.ImageUrl,
+		arg.Sku,
+		arg.ItemType,
+		arg.CostCents,
+		arg.SortOrder,
 		arg.Active,
+		arg.ID,
 	)
-	var i MenuItem
+	var i UpdateMenuItemRow
 	err := row.Scan(
 		&i.ID,
 		&i.CategoryID,
@@ -119,6 +474,10 @@ func (q *Queries) UpsertMenuItem(ctx context.Context, arg UpsertMenuItemParams) 
 		&i.Description,
 		&i.PriceCents,
 		&i.ImageUrl,
+		&i.Sku,
+		&i.ItemType,
+		&i.CostCents,
+		&i.SortOrder,
 		&i.Active,
 		&i.CreatedAt,
 	)

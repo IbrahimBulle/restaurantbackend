@@ -61,29 +61,40 @@ func (h *Handler) Routes(logMiddleware func(http.Handler) http.Handler) http.Han
 			r.Use(auth.Middleware(h.config.JWTSecret))
 
 			r.Get("/me", h.me)
-			r.With(auth.RequireRoles(domain.StaffRoles()...)).Get("/orders", h.orders)
-			r.With(auth.RequireRoles(domain.StaffRoles()...)).Get("/orders/{id}", h.order)
-			r.With(auth.RequireRoles(domain.StaffRoles()...)).Patch("/orders/{id}/status", h.updateOrderStatus)
-			r.With(auth.RequireRoles(domain.StaffRoles()...)).Get("/tables", h.tables)
-			r.With(auth.RequireRoles(domain.StaffRoles()...)).Get("/tables/{id}/qrcode", h.tableQRCode)
-			r.With(auth.RequireRoles(domain.RoleAdmin, domain.RoleManager)).Post("/tables", h.createTable)
-			r.With(auth.RequireRoles(domain.RoleAdmin, domain.RoleManager)).Put("/tables/{id}/qrcode", h.saveTableQRCode)
-
-			r.With(auth.RequireRoles(domain.StaffRoles()...)).Get("/menu", h.adminMenu)
-			r.With(auth.RequireRoles(domain.RoleAdmin, domain.RoleManager)).Post("/menu", h.createMenuItem)
-			r.With(auth.RequireRoles(domain.RoleAdmin, domain.RoleManager)).Post("/menu/categories", h.createCategory)
-			r.With(auth.RequireRoles(domain.RoleAdmin, domain.RoleManager)).Post("/menu/items", h.createMenuItem)
-			r.With(auth.RequireRoles(domain.RoleAdmin, domain.RoleManager)).Patch("/menu/items/{id}", h.updateMenuItem)
-
-			r.With(auth.RequireRoles(domain.RoleAdmin, domain.RoleManager, domain.RoleCashier)).Get("/reports/summary", h.analytics)
-			r.With(auth.RequireRoles(domain.RoleAdmin, domain.RoleManager, domain.RoleCashier)).Get("/reports/sales.csv", h.salesCSV)
-			r.With(auth.RequireRoles(domain.RoleAdmin, domain.RoleManager)).Get("/users", h.users)
-			r.With(auth.RequireRoles(domain.RoleAdmin, domain.RoleManager)).Post("/users", h.createUser)
-
-			r.With(auth.RequireRoles(domain.RoleAdmin, domain.RoleManager, domain.RoleCashier)).Post("/payments/cash", h.cashPayment)
-			r.With(auth.RequireRoles(domain.RoleAdmin, domain.RoleManager, domain.RoleCashier)).Post("/payments/mpesa", h.mpesaPayment)
-			r.With(auth.RequireRoles(domain.RoleAdmin, domain.RoleManager, domain.RoleCashier)).Post("/payments/{id}/confirm", h.confirmPayment)
-			r.With(auth.RequireRoles(domain.StaffRoles()...)).Get("/receipts/{orderID}", h.receipt)
+			r.Get("/dashboard", h.dashboard)
+			r.Get("/settings", h.settings)
+			r.Put("/settings", h.saveSettings)
+			r.Get("/products", h.products)
+			r.Post("/products", h.createProduct)
+			r.Put("/products/{id}", h.updateProduct)
+			r.Delete("/products/{id}", h.deleteProduct)
+			r.Get("/categories", h.categories)
+			r.Post("/categories", h.createCategory)
+			r.Get("/inventory", h.inventory)
+			r.Get("/inventory/movements", h.inventoryMovements)
+			r.Post("/inventory/adjust", h.adjustInventory)
+			r.Get("/orders", h.orders)
+			r.Get("/orders/{id}", h.order)
+			r.Patch("/orders/{id}/status", h.updateOrderStatus)
+			r.Get("/tables", h.tables)
+			r.Get("/tables/{id}/qrcode", h.tableQRCode)
+			r.Post("/tables", h.createTable)
+			r.Put("/tables/{id}/qrcode", h.saveTableQRCode)
+			r.Get("/menu", h.adminMenu)
+			r.Post("/menu", h.createMenuItem)
+			r.Post("/menu/categories", h.createCategory)
+			r.Post("/menu/items", h.createMenuItem)
+			r.Patch("/menu/items/{id}", h.updateMenuItem)
+			r.Get("/analytics", h.analytics)
+			r.Get("/reports/summary", h.analytics)
+			r.Get("/reports/sales.csv", h.salesCSV)
+			r.Get("/users", h.users)
+			r.Post("/users", h.createUser)
+			r.Post("/payments/cash", h.cashPayment)
+			r.Post("/payments/mpesa", h.mpesaPayment)
+			r.Post("/payments/{id}/confirm", h.confirmPayment)
+			r.Post("/payments/mpesa/callback", h.mpesaCallback)
+			r.Get("/receipts/{orderID}", h.receipt)
 		})
 	})
 
@@ -145,8 +156,17 @@ func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, fmt.Errorf("unauthorized"))
 		return
 	}
+	name := strings.TrimSpace(claims.Name)
+	if name == "" {
+		if local, _, found := strings.Cut(claims.Email, "@"); found && strings.TrimSpace(local) != "" {
+			name = local
+		} else {
+			name = claims.Email
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":     claims.UserID,
+		"name":   name,
 		"email":  claims.Email,
 		"role":   claims.Role,
 		"status": "authenticated",
@@ -169,6 +189,136 @@ func (h *Handler) adminMenu(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"categories": categories, "items": items})
+}
+
+func (h *Handler) dashboard(w http.ResponseWriter, r *http.Request) {
+	snapshot, err := h.service.DashboardSnapshot(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, snapshot)
+}
+
+func (h *Handler) settings(w http.ResponseWriter, r *http.Request) {
+	settings, err := h.service.Settings(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, settings)
+}
+
+func (h *Handler) saveSettings(w http.ResponseWriter, r *http.Request) {
+	var input domain.Settings
+	if !decode(w, r, &input) {
+		return
+	}
+	settings, err := h.service.SaveSettings(r.Context(), input)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, settings)
+}
+
+func (h *Handler) categories(w http.ResponseWriter, r *http.Request) {
+	categories, _, err := h.service.AdminMenu(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, categories)
+}
+
+func (h *Handler) products(w http.ResponseWriter, r *http.Request) {
+	products, err := h.service.Products(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, products)
+}
+
+func (h *Handler) createProduct(w http.ResponseWriter, r *http.Request) {
+	item, ok := h.decodeMenuItem(w, r)
+	if !ok {
+		return
+	}
+	created, err := h.service.CreateMenuItem(r.Context(), item)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	product, err := h.service.Product(r.Context(), created.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, product)
+}
+
+func (h *Handler) updateProduct(w http.ResponseWriter, r *http.Request) {
+	item, ok := h.decodeMenuItem(w, r)
+	if !ok {
+		return
+	}
+	updated, err := h.service.UpdateMenuItem(r.Context(), pathID(r), item)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	product, err := h.service.Product(r.Context(), updated.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, product)
+}
+
+func (h *Handler) deleteProduct(w http.ResponseWriter, r *http.Request) {
+	if err := h.service.ArchiveProduct(r.Context(), pathID(r)); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) inventory(w http.ResponseWriter, r *http.Request) {
+	products, err := h.service.Products(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	filtered := make([]domain.Product, 0, len(products))
+	for _, product := range products {
+		if product.TrackStock {
+			filtered = append(filtered, product)
+		}
+	}
+	writeJSON(w, http.StatusOK, filtered)
+}
+
+func (h *Handler) inventoryMovements(w http.ResponseWriter, r *http.Request) {
+	movements, err := h.service.InventoryMovements(r.Context(), queryInt(r, "limit", 40))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, movements)
+}
+
+func (h *Handler) adjustInventory(w http.ResponseWriter, r *http.Request) {
+	var input domain.InventoryAdjustment
+	if !decode(w, r, &input) {
+		return
+	}
+	product, err := h.service.AdjustInventory(r.Context(), input)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, product)
 }
 
 func (h *Handler) resolveTable(w http.ResponseWriter, r *http.Request) {
@@ -236,19 +386,10 @@ func (h *Handler) order(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) updateOrderStatus(w http.ResponseWriter, r *http.Request) {
-	claims, ok := auth.FromContext(r.Context())
-	if !ok {
-		writeError(w, http.StatusUnauthorized, fmt.Errorf("unauthorized"))
-		return
-	}
 	var input struct {
 		Status string `json:"status"`
 	}
 	if !decode(w, r, &input) {
-		return
-	}
-	if !canUpdateOrderStatus(claims.Role, strings.ToLower(strings.TrimSpace(input.Status))) {
-		writeError(w, http.StatusForbidden, fmt.Errorf("role %s cannot set status %s", claims.Role, input.Status))
 		return
 	}
 	order, err := h.service.UpdateOrderStatus(r.Context(), pathID(r), input.Status)
@@ -434,6 +575,32 @@ func (h *Handler) mpesaPayment(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"order": order, "payment": payment, "receipt": receipt})
 }
 
+func (h *Handler) mpesaCallback(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		PaymentID   int64  `json:"payment_id"`
+		Reference   string `json:"reference"`
+		Status      string `json:"status"`
+		Phone       string `json:"phone_number"`
+		AmountCents int64  `json:"amount_cents"`
+	}
+	if !decode(w, r, &input) {
+		return
+	}
+	if strings.ToLower(strings.TrimSpace(input.Status)) != "paid" {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"received": true,
+			"status":   "ignored",
+		})
+		return
+	}
+	order, payment, receipt, err := h.service.ConfirmPayment(r.Context(), input.PaymentID, input.Reference)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"order": order, "payment": payment, "receipt": receipt, "received": true})
+}
+
 func (h *Handler) confirmPayment(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Reference string `json:"reference"`
@@ -574,39 +741,42 @@ func (h *Handler) frontendBase(r *http.Request) string {
 
 func (h *Handler) decodeMenuItem(w http.ResponseWriter, r *http.Request) (repository.SaveMenuItemInput, bool) {
 	var input struct {
-		CategoryID  int64  `json:"category_id"`
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		PriceCents  int64  `json:"price_cents"`
-		ImageURL    string `json:"image_url"`
-		Active      bool   `json:"active"`
+		CategoryID   int64   `json:"category_id"`
+		Name         string  `json:"name"`
+		Description  string  `json:"description"`
+		PriceCents   int64   `json:"price_cents"`
+		ImageURL     string  `json:"image_url"`
+		SKU          string  `json:"sku"`
+		ItemType     string  `json:"item_type"`
+		CostCents    int64   `json:"cost_cents"`
+		SortOrder    int     `json:"sort_order"`
+		StockQty     float64 `json:"stock_qty"`
+		ReorderLevel float64 `json:"reorder_level"`
+		Unit         string  `json:"unit"`
+		TrackStock   *bool   `json:"track_stock"`
+		Active       bool    `json:"active"`
 	}
 	if !decode(w, r, &input) {
 		return repository.SaveMenuItemInput{}, false
 	}
-	return repository.SaveMenuItemInput{
-		CategoryID:  input.CategoryID,
-		Name:        input.Name,
-		Description: input.Description,
-		PriceCents:  input.PriceCents,
-		ImageURL:    input.ImageURL,
-		Active:      input.Active,
-	}, true
-}
-
-func canUpdateOrderStatus(role domain.Role, status string) bool {
-	switch role {
-	case domain.RoleAdmin, domain.RoleManager:
-		return true
-	case domain.RoleChef:
-		switch status {
-		case "new", "pending", "accepted", "preparing", "ready":
-			return true
-		}
-	case domain.RoleWaiter:
-		return status == "served"
-	case domain.RoleCashier:
-		return status == "paid"
+	trackStock := true
+	if input.TrackStock != nil {
+		trackStock = *input.TrackStock
 	}
-	return false
+	return repository.SaveMenuItemInput{
+		CategoryID:   input.CategoryID,
+		Name:         input.Name,
+		Description:  input.Description,
+		PriceCents:   input.PriceCents,
+		ImageURL:     input.ImageURL,
+		SKU:          input.SKU,
+		ItemType:     input.ItemType,
+		CostCents:    input.CostCents,
+		SortOrder:    input.SortOrder,
+		StockQty:     input.StockQty,
+		ReorderLevel: input.ReorderLevel,
+		Unit:         input.Unit,
+		TrackStock:   trackStock,
+		Active:       input.Active,
+	}, true
 }
