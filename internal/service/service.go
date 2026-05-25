@@ -22,7 +22,7 @@ type Service struct {
 	hub    *realtime.Hub
 	config config.Config
 }
-
+var baseURL string = "https://qrdinehotel.netlify.app"
 func New(repo *repository.Repository, hub *realtime.Hub, cfg config.Config) *Service {
 	return &Service{repo: repo, hub: hub, config: cfg}
 }
